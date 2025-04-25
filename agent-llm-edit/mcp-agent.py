@@ -174,10 +174,13 @@ def create_dynamic_instructions(base_prompt: str) -> Callable[[RunContextWrapper
         if ctx.context.last_proposal:
              try: proposal_json = ctx.context.last_proposal.model_dump_json(indent=2); last_proposal_info = f"""【前回のAI提案】:\n```json\n{proposal_json}\n```"""
              except Exception: last_proposal_info = "【前回のAI提案】: (情報取得失敗)"
+        # ★ ファイルパスを動的に埋め込む
+        filepath_info = f"【現在のファイルパス】: {ctx.context.filepath}"
         full_prompt = f"""{base_prompt}
 
 --- 追加コンテキスト情報 ---
-【現在のファイル内容】(ファイルパス: {ctx.context.filepath}):
+{filepath_info}
+【現在のファイル内容】:
 ```
 {content_to_agent}
 ```
@@ -193,11 +196,9 @@ def create_dynamic_instructions(base_prompt: str) -> Callable[[RunContextWrapper
     return dynamic_instructions_func
 
 # --- エージェント定義 (動的プロンプトを使用) ---
+general_edit_agent: Optional[Agent[EditContext]] = None # 先行宣言
 
-# ★ 相互ハンドオフのために、先に GeneralEditAgent を仮定義
-general_edit_agent: Optional[Agent[EditContext]] = None
-
-# 1. 置換担当エージェント (ReplaceAgent) - ★ 相互ハンドオフ対応
+# 1. 置換担当エージェント (ReplaceAgent)
 REPLACE_AGENT_BASE_PROMPT = """
 あなたはテキスト内の特定の文字列を置換する専門のエージェントです。
 ユーザー指示（会話履歴の最後のメッセージ）と追加コンテキスト情報（現在のファイル内容など）が与えられます。
@@ -222,12 +223,11 @@ replace_agent = Agent[EditContext](
     instructions=create_dynamic_instructions(REPLACE_AGENT_BASE_PROMPT),
     model=MODEL,
     tools=[grep_tool],
-    # ★ GeneralEditAgent へのハンドオフを追加 (遅延評価)
     handoffs=lambda: [general_edit_agent] if general_edit_agent else [],
     output_type=AgentFinalOutput,
 )
 
-# 2. 一般編集担当エージェント (GeneralEditAgent) - ★ 相互ハンドオフ対応
+# 2. 一般編集担当エージェント (GeneralEditAgent)
 GENERAL_EDIT_AGENT_BASE_PROMPT = """
 あなたはテキストの一般的な編集（誤字脱字修正、表現改善、内容追加・削除、スタイル変更、要約、構造変更など）や、会話履歴に基づいた操作（元に戻すなど）を行う専門のエージェントです。
 ユーザー指示（会話履歴の最後のメッセージ）と追加コンテキスト情報（現在のファイル内容、直前の編集、前回の提案）が与えられます。
@@ -239,31 +239,34 @@ GENERAL_EDIT_AGENT_BASE_PROMPT = """
     * このタスクは `ReplaceAgent` の方が適している可能性があります。
     * `transfer_to_ReplaceAgent` ツールを呼び出して、`ReplaceAgent` に処理を依頼することを検討してください。ハンドオフする理由（例：「明確な置換指示のため、置換専門エージェントに依頼します」）を明確に述べてください。**ただし、少しでも曖昧さがある場合や、置換以外の要素が含まれる場合は、自分で処理してください。**
 3.  **「元に戻す」系の指示への対応:**
-    * 【直前に適用された編集】が存在する場合、その編集操作を逆転させる提案 (`SingleEdit` または `MultipleEdits`) を作成します。
-    * 直前が `ReplaceAll` の場合は元に戻せないため `clarification_needed` を返します。
-    * 【直前に適用された編集】がない場合は `clarification_needed` を返します。
+    * **追加コンテキスト情報の【直前に適用された編集】が存在する場合:** その編集内容を分析し、**その編集操作を逆転させる提案**を作成してください。
+        * **例1:** 直前が `SingleEdit` で `old_context`='A', `new_string`='B' だった場合、【現在のファイル内容】から 'B' を探し、それを `old_context` として `new_string`='A' とする `SingleEdit` を提案します。
+        * **例2:** 直前が `MultipleEdits` だった場合、各編集操作を逆転させる `MultipleEdits` を提案します。
+        * **例3:** 直前が `ReplaceAll` だった場合、`clarification_needed` を返し、「直前の全体置換を元に戻すことはできません。具体的にどう修正しますか？」と質問してください。
+    * **【直前に適用された編集】が存在しない場合:** `clarification_needed` を返し、「何を元に戻したいですか？ 具体的に教えてください。」と質問してください。
 4.  **その他の一般編集指示への対応:**
-    * 【現在のファイル内容】と会話履歴を考慮し、編集の範囲と性質に基づいて、最適な編集提案 (`single_edit`, `multiple_edits`, `replace_all`) を作成します。
-    * 指示が編集要求でない場合は `conversation` を返します。
-    * 指示が曖昧すぎる場合は `clarification_needed` を返します。
-    * 実行不可能な場合は `rejected` を返します。
+    * 【現在のファイル内容】と会話履歴を考慮し、編集の範囲と性質に基づいて、以下のいずれかの形式を**自動的に判断して**選択し、提案します。
+        * `single_edit`
+        * `multiple_edits`
+        * `replace_all`
+        * `conversation`
+        * `clarification_needed`
+        * `rejected`
 5.  `old_context` 生成ルールは厳守してください。
 6.  応答は必ず `AgentFinalOutput` 型のJSON形式、または `transfer_to_ReplaceAgent` のツール呼び出しのいずれかです。
 7.  **注意:** あなたは `grep_tool` を使用できません。
 """
-# ★ GeneralEditAgent を正式に定義
 general_edit_agent = Agent[EditContext](
     name="GeneralEditAgent",
     handoff_description="表現修正、内容追加・削除、スタイル変更、要約、構造変更、**特に『元に戻す』操作**を含む、一般的な編集タスクを専門に行うエージェント。明確な置換はReplaceAgentに渡すことがあります。",
     instructions=create_dynamic_instructions(GENERAL_EDIT_AGENT_BASE_PROMPT),
     model=MODEL,
     tools=[],
-    # ★ ReplaceAgent へのハンドオフを追加
     handoffs=[replace_agent],
     output_type=AgentFinalOutput,
 )
 
-# 3. 司令塔エージェント (TriageAgent) - プロンプト微調整
+# 3. 司令塔エージェント (TriageAgent)
 TRIAGE_AGENT_BASE_PROMPT = """
 あなたはテキスト編集や関連タスクのリクエストを受け付け、内容を分析して最適な処理（専門エージェントへのハンドオフ、MCPツールの利用、自身での応答）を判断する司令塔エージェントです。
 ユーザー指示（会話履歴の最後のメッセージ）と追加コンテキスト情報（現在のファイル内容、直前の編集、前回の提案）が与えられます。
@@ -285,7 +288,7 @@ TRIAGE_AGENT_BASE_PROMPT = """
     * **会話/質問:** 上記いずれでもない場合。
     * **不明/拒否:** 指示が不明瞭すぎる、実行不可能、または不適切な場合。
 2.  判断結果に基づいて、以下のいずれかのアクションを実行します。
-    * **Notion操作 (書き込み/アップロード)の場合:** **NotionMCP Light** の `uploadMarkdown` ツールを呼び出します。`filepath`引数には【現在のファイル内容】のパス ({filepath}) を渡します。
+    * **Notion操作 (書き込み/アップロード)の場合:** **NotionMCP Light** の `uploadMarkdown` ツールを呼び出します。`filepath`引数には【現在のファイルパス】を渡します。
     * **Notion操作 (読み取り/検索/その他)の場合:** **公式Notion API** の適切なツールを呼び出します。
     * **ファイル操作の場合:** 適切な ファイルシステム MCP ツール を呼び出します。
     * **明確な文字列置換の場合:** `ReplaceAgent` にハンドオフします。ユーザーが検索を指示した場合のみ、その旨を伝えてください。
@@ -394,7 +397,7 @@ def display_diff(old_text: str, new_text: str):
 
 # --- メイン実行部分 ---
 async def main():
-    console.print("[bold magenta]AIテキスト編集エージェントへようこそ！ (MCP+Notion連携・改良版 v7)[/]") # バージョン表示変更
+    console.print("[bold magenta]AIテキスト編集エージェントへようこそ！ (MCP+Notion連携・改良版 v8)[/]") # バージョン表示変更
     filepath = get_file_path()
     if not filepath: console.print("[bold magenta]終了します。[/]"); return
 
@@ -472,15 +475,15 @@ async def run_main_loop(
         instructions=create_dynamic_instructions(TRIAGE_AGENT_BASE_PROMPT), # ★ 動的プロンプト
         model=MODEL,
         tools=[],
-        # ★ TriageAgentは専門エージェントにハンドオフするだけ
         handoffs=[replace_agent, general_edit_agent],
         mcp_servers=active_mcp_servers,
         output_type=AgentFinalOutput, # 直接応答する場合の型
     )
 
     run_config = RunConfig(
-        workflow_name="AdvancedFileEditWorkflow-v7", # バージョン更新
-        max_turns=15 # ★ 最大ターン数を設定してループ制御
+        workflow_name="AdvancedFileEditWorkflow-v8", # バージョン更新
+        # ★ max_turns は RunConfig から削除
+        # max_turns=15
     )
 
     total_tokens_used = 0
@@ -533,13 +536,13 @@ async def run_main_loop(
             #    edit_context.last_proposal = last_agent_proposal_obj # これは間違い
 
             # --- Agent実行 ---
-            # ★ input には会話履歴リスト全体を渡す
+            # ★ input には会話履歴リスト全体を渡し、max_turns を直接指定
             result = await Runner.run(
                 starting_agent=triage_agent_final,
                 input=conversation_history, # ★ 会話履歴リストを渡す
                 context=edit_context,      # コンテキスト（ファイル内容等アクセス用）
-                run_config=run_config,     # max_turns などを含む
-                # max_turns は run_config で設定するのでここでは不要
+                run_config=run_config,
+                max_turns=15               # ★ Runner.run に max_turns を渡す
             )
 
             # --- トークン数表示 ---
@@ -585,9 +588,6 @@ async def run_main_loop(
                          continue
                      elif last_item.type == "handoff_output_item":
                          console.print(f"[cyan]ハンドオフ発生: {getattr(last_item.source_agent,'name','?')} -> {getattr(last_item.target_agent,'name','?')}[/cyan]")
-                         # ハンドオフ発生時は通常、次のエージェントが応答するので、ここでは履歴に追加せずループを続ける
-                         # （もし最終応答がない場合は下のNoneチェックで捕捉される）
-                         # edit_context.last_applied_edit = None; edit_context.last_proposal = None # ハンドオフ時はリセットしない方が良い場合も？
                          continue # ★ ハンドオフ後は次のAgentの処理を待つ
                 elif final_output_raw is None:
                      console.print("[yellow]AIからの応答なし。[/yellow]")
@@ -597,7 +597,7 @@ async def run_main_loop(
 
                 edit_context.last_proposal = agent_output # ★ 提案内容をコンテキストに保存
 
-                if not assistant_response_content: # final_outputがリスト形式でなかった場合など
+                if not assistant_response_content:
                     if isinstance(agent_output, (SingleEdit, MultipleEdits, ReplaceAll, ClarificationNeeded, Conversation, Rejected)):
                          try: assistant_response_content.append({"type": "output_text", "text": agent_output.model_dump_json(indent=2)})
                          except Exception: assistant_response_content.append({"type": "output_text", "text": str(agent_output)})
