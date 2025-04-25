@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "notion-mcp-light"
+version = "0.1.0"
+description = "Notion MCP Light - Notion APIを使用してMarkdownファイルとNotionページを同期するMCPサーバー"
+authors = [
+    {name = "NotionMCP Light Team"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Text Processing :: Markup :: Markdown",
+    "Topic :: Office/Business :: Office Suites",
+]
+dependencies = [
+    "notion-client",
+    "mcp[cli]",
+    "markdown",
+    "mistune",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[project.scripts]
+notion-mcp-light = "main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
