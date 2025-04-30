@@ -41,7 +41,6 @@ from agents import (
     OpenAIChatCompletionsModel, # Chat Completions API用
     ItemHelpers,
 )
-from agents.extensions.visualization import draw_graph
 # LiteLLM 連携 (オプション)
 try:
     from agents.extensions.models.litellm_model import LitellmModel
@@ -1012,16 +1011,6 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
 
 async def main():
     console.print("[bold magenta]📝 SEO記事生成システム (リサーチ強化版) へようこそ！[/bold magenta]")
-
-    draw_graph(theme_agent, filename="theme_agent_graph").view()
-    draw_graph(research_planner_agent, filename="research_planner_agent_graph").view()
-    draw_graph(researcher_agent, filename="researcher_agent_graph").view()
-    draw_graph(research_synthesizer_agent, filename="research_synthesizer_agent_graph").view()
-    draw_graph(outline_agent, filename="outline_agent_graph").view()
-    draw_graph(section_writer_agent, filename="section_writer_agent_graph").view()
-    draw_graph(editor_agent, filename="editor_agent_graph").view()
-    
-
 
     # --- ユーザーからの初期情報入力 ---
     keywords_str = Prompt.ask("[cyan]ターゲットキーワードを入力してください（カンマ区切り）[/cyan]", default="芝生, 育て方, 初心者")
