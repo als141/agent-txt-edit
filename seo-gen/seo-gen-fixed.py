@@ -15,6 +15,27 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from dataclasses import dataclass, field
 import uuid
 
+# --- JSON サニタイズユーティリティ ------------------------------------------
+import json as _json
+import re as _re_sanitize
+
+def _escape_control_chars(s: str) -> str:
+    """
+    JSON デコード用に、制御文字 (タブ, LF, CR を除く U+0000–U+001F) を \uXXXX でエスケープします。
+    """
+    def _repl(m):
+        ch = m.group(0)
+        return f"\\u{ord(ch):04x}"
+    return _re_sanitize.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F]', _repl, s)
+
+def safe_json_loads(raw: str):
+    """制御文字をエスケープしてから json.loads します。"""
+    try:
+        return _json.loads(raw)
+    except _json.JSONDecodeError:
+        return _json.loads(_escape_control_chars(raw))
+# ---------------------------------------------------------------------------
+
 # --- Agents SDK ---
 from agents import (
     Agent,
@@ -39,7 +60,6 @@ from agents import (
     Model,
     OpenAIResponsesModel, # デフォルト
     OpenAIChatCompletionsModel, # Chat Completions API用
-    # アイテムヘルパー (会話履歴構築用) - 不要になったMessageInputItemを削除
     ItemHelpers,
 )
 # LiteLLM 連携 (オプション)
@@ -74,10 +94,10 @@ if not OPENAI_API_KEY:
 # 必要に応じて set_default_openai_client や set_default_openai_api で変更可能
 async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 # モデル名をgpt-4.1-miniに変更
-DEFAULT_MODEL = "gpt-4.1-mini"
-RESEARCH_MODEL = "gpt-4.1-mini" # リサーチもminiで試す
-WRITING_MODEL = "gpt-4.1-mini"  # 執筆もminiで試す
-EDITING_MODEL = "gpt-4.1-mini"  # 編集もminiで試す
+DEFAULT_MODEL = "gpt-4o-mini"
+RESEARCH_MODEL = "gpt-4o-mini" # リサーチもminiで試す
+WRITING_MODEL = "o4-mini"  # 執筆もminiで試す
+EDITING_MODEL = "gpt-4o-mini"  # 編集もminiで試す
 
 # リトライ設定
 MAX_RETRIES = 3 # 最大リトライ回数
@@ -223,7 +243,9 @@ class ArticleContext:
 # --- ツール定義 ---
 # (変更なし)
 # Web検索ツール (Agents SDK標準) - ResearcherAgentが使用
-web_search_tool = WebSearchTool()
+web_search_tool = WebSearchTool(
+    user_location={"type": "approximate", "country": "JP"} 
+)
 
 # ファイル検索ツール (Agents SDK標準) - 必要に応じて使用
 # file_search_tool = FileSearchTool(vector_store_ids=[...]) if context.vector_store_id else None
@@ -238,10 +260,10 @@ async def get_company_data(ctx: RunContextWrapper[ArticleContext]) -> Dict[str, 
     console.print("[dim]ツール実行(get_company_data): ダミーデータを返します。[/dim]")
     return {
         "success": True,
-        "company_name": ctx.context.company_name or "サンプル株式会社",
-        "company_description": ctx.context.company_description or "革新的な技術で未来を創造する企業です。",
+        "company_name": ctx.context.company_name or "株式会社ジョンソンホームズ",
+        "company_description": ctx.context.company_description or "住宅の設計・施工、リフォーム工事の設計・施工、不動産の売買および斡旋、インテリア商品の販売、オーダーソファの製造・販売、レストラン・カフェ運営、保険事業、住宅FC本部",
         "company_style_guide": ctx.context.company_style_guide or "文体は丁寧語（ですます調）を基本とし、専門用語は避ける。読者に寄り添うフレンドリーなトーン。",
-        "past_articles_summary": ctx.context.past_articles_summary or "過去には技術解説や導入事例の記事が多く、SEOキーワードは「AI」「効率化」などが中心。",
+        "past_articles_summary": ctx.context.past_articles_summary or "過去にはブログやコラム系の記事が多い。",
     }
 
 # 競合分析ツール (ダミー)
@@ -257,8 +279,8 @@ async def analyze_competitors(ctx: RunContextWrapper[ArticleContext], query: str
     console.print(f"[dim]ツール実行(analyze_competitors): クエリ '{query}' のダミー分析結果を返します。[/dim]")
     return {
         "success": True,
-        "summary": f"'{query}' に関する競合記事の多くは、種類選び、土壌準備、水やり、肥料、病害虫対策のセクションを含んでいます。図解や動画を多用する傾向があります。",
-        "common_sections": ["種類選び", "土壌準備", "水やり", "肥料", "病害虫対策", "年間スケジュール"],
+        "summary": f"'{query}' に関する競合記事",
+        "common_sections": ["ダミー"],
         "estimated_length_range": "1500〜3000文字",
     }
 
@@ -394,7 +416,7 @@ def create_outline_instructions(base_prompt: str) -> Callable[[RunContextWrapper
 
 **重要:**
 - 上記のテーマと**リサーチ結果**、そして競合分析の結果（ツール使用）に基づいて、記事のアウトラインを作成してください。
-- リサーチ結果の主要ポイントや面白い切り口をアウトラインに反映させてください。
+- リサーチ結果の主要ポイントや面白い切り口をアウトラインに反映させてください。日本のよくあるブログやコラムのように親しみやすいトーンでアウトラインを作成してください。
 - あなたの応答は必ず `Outline` または `ClarificationNeeded` 型のJSON形式で出力してください。
 - 文字数指定がある場合は、それに応じてセクション数や深さを調整してください。
 """
@@ -529,14 +551,12 @@ researcher_agent = Agent[ArticleContext](
     name="ResearcherAgent",
     instructions=create_researcher_instructions(RESEARCHER_AGENT_BASE_PROMPT),
     model=RESEARCH_MODEL,
-    # --- ModelSettings を追加してツール使用を強制 ---
-    model_settings=ModelSettings(
-        tool_choice="auto" # SDKのWebSearchToolクラス名に合わせる
-        # tool_choice="auto" # APIドキュメントのタイプ名
-    ),
-    # ---------------------------------------------
     tools=[web_search_tool], # save_research_snippet を削除済み
-    output_type=AgentOutput, # ResearchQueryResult を返すように変更済み
+    model_settings=ModelSettings(response_format={
+        "type": "json_object",
+        "schema": ResearchQueryResult.model_json_schema()
+    }),
+    output_type=ResearchQueryResult, # ResearchQueryResult を返すように変更済み
 )
 
 # 4. リサーチシンセサイザーエージェント
@@ -629,7 +649,7 @@ def get_litellm_agent(agent_type: Literal["editor", "writer", "researcher"], mod
             instructions_func = create_researcher_instructions
             tools = [web_search_tool]
             # LiteLLM経由でWebSearchToolを使う場合、tool_choiceがどう機能するか不明瞭
-            # model_settings = ModelSettings(tool_choice="auto") # これはOpenAI API特有の可能性
+            # model_settings = ModelSettings(tool_choice={"type": "web_search"}) # これはOpenAI API特有の可能性
         else:
             console.print(f"[red]エラー: 未知のエージェントタイプ '{agent_type}'[/red]")
             return None
@@ -826,7 +846,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
 
             # --- 会話履歴を input として構築 ---
             # 1. 基本的な指示 (developerロールが良いかもしれない)
-            base_instruction = await create_section_writer_instructions(SECTION_WRITER_AGENT_BASE_PROMPT)(RunContextWrapper(context=context, run_config=run_config, items=[]), current_agent) # ダミーのWrapperとAgentを渡す
+            base_instruction = await create_section_writer_instructions(SECTION_WRITER_AGENT_BASE_PROMPT)(RunContextWrapper(context=context), current_agent) # ダミーのWrapperとAgentを渡す
 
             # MessageInputItem の代わりに辞書を使用
             current_input_messages: List[Dict[str, Any]] = [
@@ -838,7 +858,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
                 previous_section_html = context.generated_sections_html[-1]
                 # MessageInputItem の代わりに辞書を使用
                 current_input_messages.append(
-                    {"role": "assistant", "content": [{"type": "input_text", "text": previous_section_html}]}
+                    {"role": "assistant", "content": [{"type": "output_text", "text": previous_section_html}]}
                 )
 
             # 3. 今回の執筆依頼を user メッセージとして追加
@@ -935,7 +955,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
                   agent_output = result.final_output
              elif isinstance(result.final_output, str):
                   try:
-                       parsed_output = json.loads(result.final_output)
+                       parsed_output = safe_json_loads(result.final_output)
                        agent_output = AgentOutput(**parsed_output) # type: ignore
                   except (json.JSONDecodeError, ValidationError) as parse_error:
                        console.print(f"[yellow]警告: Agentからの応答が予期したJSON形式ではありません。内容: {result.final_output[:100]}... エラー: {parse_error}[/yellow]")
