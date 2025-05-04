@@ -81,10 +81,10 @@ if not OPENAI_API_KEY:
 # 必要に応じて set_default_openai_client や set_default_openai_api で変更可能
 async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 # モデル名をgpt-4.1-miniに変更
-DEFAULT_MODEL = "gpt-4o-mini"
-RESEARCH_MODEL = "gpt-4o-mini" # リサーチもminiで試す
-WRITING_MODEL = "gpt-4o-mini"  # 執筆もminiで試す (o4-miniは存在しない可能性)
-EDITING_MODEL = "gpt-4o-mini"  # 編集もminiで試す
+DEFAULT_MODEL = "gpt-4.1"
+RESEARCH_MODEL = "gpt-4.1" # リサーチもminiで試す
+WRITING_MODEL = "gpt-4.1"  # 執筆もminiで試す (o4-miniは存在しない可能性)
+EDITING_MODEL = "gpt-4.1"  # 編集もminiで試す
 
 # リトライ設定
 MAX_RETRIES = 3 # 最大リトライ回数
@@ -141,7 +141,7 @@ class StatusUpdate(BaseModel):
     status: Literal["status_update"] = Field(description="出力タイプ: 状況更新")
     message: str = Field(description="現在の処理状況や次のステップに関するメッセージ")
 
-# --- リサーチ関連モデル ---
+# --- リサーチ関連モデル (強化版) ---
 class ResearchQuery(BaseModel):
     """リサーチプラン内の単一検索クエリ"""
     query: str = Field(description="実行する具体的な検索クエリ")
@@ -153,22 +153,33 @@ class ResearchPlan(BaseModel):
     topic: str = Field(description="リサーチ対象のトピック（記事テーマ）")
     queries: List[ResearchQuery] = Field(description="実行する検索クエリのリスト")
 
-class ResearchQueryResult(BaseModel): # 新しいモデル
-    """単一クエリのリサーチ結果要約"""
+class SourceSnippet(BaseModel): # 新しいモデル: 詳細な情報と出典を紐付ける
+    """リサーチ結果からの詳細な抜粋と出典情報"""
+    snippet_text: str = Field(description="記事作成に役立つ具体的な情報やデータの抜粋")
+    source_url: str = Field(description="この抜粋の出典元URL（可能な限り、最も具体的なページ）")
+    source_title: Optional[str] = Field(default=None, description="出典元ページのタイトル")
+
+class ResearchQueryResult(BaseModel): # 修正: より詳細な情報を保持
+    """単一クエリのリサーチ結果（詳細版）"""
     status: Literal["research_query_result"] = Field(description="出力タイプ: リサーチクエリ結果")
     query: str = Field(description="実行された検索クエリ")
-    summary: str = Field(description="検索結果の主要な情報の要約")
-    relevant_snippets: List[str] = Field(description="記事作成に役立ちそうな短い抜粋")
-    source_urls: List[str] = Field(description="参照した主要な情報源URL")
+    summary: str = Field(description="検索結果の主要な情報の要約（簡潔に）")
+    detailed_findings: List[SourceSnippet] = Field(description="記事作成に役立つ詳細な情報抜粋と出典URLのリスト")
+    # source_urls は detailed_findings に含まれるため削除
 
-class ResearchReport(BaseModel):
-    """リサーチ結果の要約レポート"""
+class KeyPoint(BaseModel): # 新しいモデル: キーポイントと出典を紐付ける
+    """リサーチレポートのキーポイントと関連情報源"""
+    point: str = Field(description="記事に含めるべき重要なポイントや事実")
+    supporting_sources: List[str] = Field(description="このポイントを裏付ける情報源URLのリスト")
+
+class ResearchReport(BaseModel): # 修正: 詳細な情報と出典を保持
+    """リサーチ結果の要約レポート（詳細版）"""
     status: Literal["research_report"] = Field(description="出力タイプ: リサーチレポート")
     topic: str = Field(description="リサーチ対象のトピック")
     overall_summary: str = Field(description="リサーチ全体から得られた主要な洞察やポイントの要約")
-    key_points: List[str] = Field(description="記事に含めるべき重要なポイントや事実のリスト")
+    key_points: List[KeyPoint] = Field(description="記事に含めるべき重要なポイントや事実と、その情報源リスト")
     interesting_angles: List[str] = Field(description="記事を面白くするための切り口や視点のアイデア")
-    sources_used: List[str] = Field(description="参照した主要な情報源URLのリスト")
+    all_sources: List[str] = Field(description="参照した全ての情報源URLのリスト（重複削除済み、重要度順推奨）")
 
 # エージェントが出力しうる型のUnion (ArticleSection を削除)
 AgentOutput = Union[
@@ -204,8 +215,8 @@ class ArticleContext:
     selected_theme: Optional[ThemeIdea] = None
     research_plan: Optional[ResearchPlan] = None # リサーチプラン
     current_research_query_index: int = 0 # 現在のリサーチクエリインデックス
-    research_query_results: List[ResearchQueryResult] = field(default_factory=list) # 追加: クエリ結果を保存
-    research_report: Optional[ResearchReport] = None # 最終リサーチレポート
+    research_query_results: List[ResearchQueryResult] = field(default_factory=list) # 修正: クエリ結果を保存 (型変更)
+    research_report: Optional[ResearchReport] = None # 修正: 最終リサーチレポート (型変更)
     generated_outline: Optional[Outline] = None
     current_section_index: int = 0 # 執筆対象のセクションインデックス (0ベース)
     generated_sections_html: List[str] = field(default_factory=list) # 各セクションのHTMLを格納
@@ -221,7 +232,7 @@ class ArticleContext:
         """生成されたセクションを結合して完全なドラフトHTMLを返す"""
         return "\n".join(self.generated_sections_html)
 
-    def add_query_result(self, result: ResearchQueryResult): # 新しいメソッド
+    def add_query_result(self, result: ResearchQueryResult): # 修正: 型ヒント変更
         """リサーチクエリ結果を追加"""
         self.research_query_results.append(result)
 
@@ -334,6 +345,7 @@ def create_research_planner_instructions(base_prompt: str) -> Callable[[RunConte
         return full_prompt
     return dynamic_instructions_func
 
+# 修正: ResearcherAgent のプロンプト (詳細な情報収集を指示)
 def create_researcher_instructions(base_prompt: str) -> Callable[[RunContextWrapper[ArticleContext], Agent[ArticleContext]], Awaitable[str]]:
     async def dynamic_instructions_func(ctx: RunContextWrapper[ArticleContext], agent: Agent[ArticleContext]) -> str:
         if not ctx.context.research_plan or ctx.context.current_research_query_index >= len(ctx.context.research_plan.queries):
@@ -351,64 +363,73 @@ def create_researcher_instructions(base_prompt: str) -> Callable[[RunContextWrap
 
 **重要:**
 - 上記の検索クエリを使用して `web_search` ツールを実行してください。
-- 検索結果を分析し、記事テーマとクエリの焦点に関連する**主要な情報を要約**してください。
-- 特に記事作成に役立ちそうな**短い抜粋 (relevant_snippets)** をいくつか含めてください。ただし、特殊な制御文字は含めず、通常の文字のみを使用してください。
-- 参照した**主要な情報源のURL (source_urls)** もリストアップしてください。
-- あなたの応答は必ず `ResearchQueryResult` 型のJSON形式で出力してください。他のテキストは含めないでください。
+- 検索結果を**深く分析**し、記事テーマとクエリの焦点に関連する**具体的な情報、データ、主張、引用**などを**詳細に抽出**してください。
+- 抽出した各情報について、**最も信頼性が高く具体的な出典元URLとそのタイトル**を特定し、`SourceSnippet` 形式でリスト化してください。単なる検索結果一覧のURLではなく、情報が実際に記載されているページのURLを重視してください。公式HPや信頼できる情報源を優先してください。
+- 検索結果全体の**簡潔な要約 (summary)** も生成してください。
+- あなたの応答は必ず `ResearchQueryResult` 型のJSON形式で出力してください。他のテキストは一切含めないでください。
 - **`save_research_snippet` ツールは使用しないでください。**
 """
         return full_prompt
     return dynamic_instructions_func
 
+# 修正: ResearchSynthesizerAgent のプロンプト (詳細なレポート作成を指示)
 def create_research_synthesizer_instructions(base_prompt: str) -> Callable[[RunContextWrapper[ArticleContext], Agent[ArticleContext]], Awaitable[str]]:
     async def dynamic_instructions_func(ctx: RunContextWrapper[ArticleContext], agent: Agent[ArticleContext]) -> str:
         if not ctx.context.research_query_results:
             return "エラー: 要約するためのリサーチ結果がありません。"
 
         results_str = ""
-        all_sources = set()
+        all_sources_set = set() # 重複削除用
         for i, result in enumerate(ctx.context.research_query_results):
             results_str += f"--- クエリ結果 {i+1} ({result.query}) ---\n"
             results_str += f"要約: {result.summary}\n"
-            results_str += "抜粋:\n"
-            for snip in result.relevant_snippets:
-                results_str += f"- {snip}\n"
-            results_str += "情報源:\n"
-            for url in result.source_urls:
-                results_str += f"- {url}\n"
-                all_sources.add(url)
+            results_str += "詳細な発見:\n"
+            for finding in result.detailed_findings:
+                results_str += f"- 抜粋: {finding.snippet_text}\n"
+                results_str += f"  出典: [{finding.source_title or finding.source_url}]({finding.source_url})\n"
+                all_sources_set.add(finding.source_url) # URLをセットに追加
             results_str += "\n"
+
+        all_sources_list = sorted(list(all_sources_set)) # 重複削除してリスト化
 
         full_prompt = f"""{base_prompt}
 
 --- リサーチ対象テーマ ---
 {ctx.context.selected_theme.title if ctx.context.selected_theme else 'N/A'}
 
---- 収集されたリサーチ結果 ---
+--- 収集されたリサーチ結果 (詳細) ---
 {results_str[:15000]}
 { "... (以下省略)" if len(results_str) > 15000 else "" }
 ---
 
 **重要:**
-- 上記のリサーチ結果全体を分析し、記事執筆に役立つように情報を統合・要約してください。
-- 以下の要素を含む**カジュアルで実用的なレポート**を作成してください:
+- 上記の詳細なリサーチ結果全体を分析し、記事執筆に役立つように情報を統合・要約してください。
+- 以下の要素を含む**実用的で詳細なリサーチレポート**を作成してください:
     - `overall_summary`: リサーチ全体から得られた主要な洞察やポイントの要約。
-    - `key_points`: 記事に含めるべき重要なポイントや事実のリスト形式。
+    - `key_points`: 記事に含めるべき重要なポイントや事実をリスト形式で記述し、各ポイントについて**それを裏付ける情報源URL (`supporting_sources`)** を `KeyPoint` 形式で明確に紐付けてください。
     - `interesting_angles`: 記事を面白くするための切り口や視点のアイデアのリスト形式。
-    - `sources_used`: 参照した主要な情報源URLのリスト（重複は削除）。
+    - `all_sources`: 参照した全ての情報源URLのリスト（重複削除済み、可能であれば重要度順）。
 - レポートは論文調ではなく、記事作成者がすぐに使えるような分かりやすい言葉で記述してください。
 - あなたの応答は必ず `ResearchReport` 型のJSON形式で出力してください。
 """
         return full_prompt
     return dynamic_instructions_func
 
+# 修正: OutlineAgent のプロンプト (詳細なリサーチレポートを参照)
 def create_outline_instructions(base_prompt: str) -> Callable[[RunContextWrapper[ArticleContext], Agent[ArticleContext]], Awaitable[str]]:
     async def dynamic_instructions_func(ctx: RunContextWrapper[ArticleContext], agent: Agent[ArticleContext]) -> str:
         if not ctx.context.selected_theme or not ctx.context.research_report:
             return "エラー: テーマまたはリサーチレポートが利用できません。"
 
         company_info_str = f"文体ガイド: {ctx.context.company_style_guide}" if ctx.context.company_style_guide else "企業文体ガイドなし"
-        research_summary = f"リサーチ要約: {ctx.context.research_report.overall_summary}\n主要ポイント: {', '.join(ctx.context.research_report.key_points)}\n面白い切り口: {', '.join(ctx.context.research_report.interesting_angles)}"
+        # リサーチレポートのキーポイントを整形
+        research_key_points_str = ""
+        for kp in ctx.context.research_report.key_points:
+            sources_str = ", ".join(kp.supporting_sources[:2]) # 代表的なソースをいくつか表示
+            if len(kp.supporting_sources) > 2: sources_str += ", ..."
+            research_key_points_str += f"- {kp.point} (出典: {sources_str})\n"
+
+        research_summary = f"リサーチ要約: {ctx.context.research_report.overall_summary}\n主要ポイント:\n{research_key_points_str}面白い切り口: {', '.join(ctx.context.research_report.interesting_angles)}"
 
         full_prompt = f"""{base_prompt}
 
@@ -420,25 +441,28 @@ def create_outline_instructions(base_prompt: str) -> Callable[[RunContextWrapper
 ターゲット文字数: {ctx.context.target_length or '指定なし（標準的な長さで）'}
 ターゲットペルソナ: {ctx.context.target_persona or '指定なし'}
 {company_info_str}
---- リサーチ結果 ---
+--- 詳細なリサーチ結果 ---
 {research_summary}
+参照した全情報源URL数: {len(ctx.context.research_report.all_sources)}
 ---
 
 **重要:**
-- 上記のテーマと**リサーチ結果**、そして競合分析の結果（ツール使用）に基づいて、記事のアウトラインを作成してください。
-- リサーチ結果の主要ポイントや面白い切り口をアウトラインに反映させてください。
-- **ターゲットペルソナ（{ctx.context.target_persona or '指定なし'}）** が読みやすいように、日本の一般的なブログやコラムのような、**親しみやすく分かりやすいトーン**でアウトラインを作成してください。
+- 上記のテーマと**詳細なリサーチ結果**、そして競合分析の結果（ツール使用）に基づいて、記事のアウトラインを作成してください。
+- リサーチ結果の**キーポイント（出典情報も考慮）**や面白い切り口をアウトラインに反映させてください。
+- **ターゲットペルソナ（{ctx.context.target_persona or '指定なし'}）** が読みやすいように、日本の一般的なブログやコラムのような、**親しみやすく分かりやすいトーン**でアウトラインを作成してください。記事全体のトーンも提案してください。
 - あなたの応答は必ず `Outline` または `ClarificationNeeded` 型のJSON形式で出力してください。
 - 文字数指定がある場合は、それに応じてセクション数や深さを調整してください。
 """
         return full_prompt
     return dynamic_instructions_func
 
-# 修正: Section Writer のプロンプト生成関数 (自然な文章生成を強化)
+# 修正: Section Writer のプロンプト (詳細なリサーチレポート参照とリンク生成指示)
 def create_section_writer_instructions(base_prompt: str) -> Callable[[RunContextWrapper[ArticleContext], Agent[ArticleContext]], Awaitable[str]]:
     async def dynamic_instructions_func(ctx: RunContextWrapper[ArticleContext], agent: Agent[ArticleContext]) -> str:
         if not ctx.context.generated_outline or ctx.context.current_section_index >= len(ctx.context.generated_outline.sections):
             return "エラー: 有効なアウトラインまたはセクションインデックスがありません。"
+        if not ctx.context.research_report:
+            return "エラー: 参照すべきリサーチレポートがありません。"
 
         target_section = ctx.context.generated_outline.sections[ctx.context.current_section_index]
         target_index = ctx.context.current_section_index # ターゲットインデックスを明確に変数化 (0ベース)
@@ -452,7 +476,15 @@ def create_section_writer_instructions(base_prompt: str) -> Callable[[RunContext
             section_target_chars = int(estimated_total_body_chars / total_sections)
 
         outline_context = "\n".join([f"{i+1}. {s.heading}" for i, s in enumerate(ctx.context.generated_outline.sections)])
-        research_context_summary = f"関連リサーチ要約: {ctx.context.research_report.overall_summary[:500]}..." if ctx.context.research_report else "リサーチ情報なし"
+
+        # リサーチレポートのキーポイントと出典情報を整形してコンテキストに追加
+        research_context_str = f"リサーチ要約: {ctx.context.research_report.overall_summary[:500]}...\n"
+        research_context_str += "主要なキーポイントと出典:\n"
+        for kp in ctx.context.research_report.key_points:
+            sources_str = ", ".join([f"[{url.split('/')[-1] if url.split('/')[-1] else url}]({url})" for url in kp.supporting_sources]) # URLからファイル名等を取得して表示
+            research_context_str += f"- {kp.point} (出典: {sources_str})\n"
+        research_context_str += f"参照した全情報源URL数: {len(ctx.context.research_report.all_sources)}\n"
+
         company_style_guide = ctx.context.company_style_guide or '指定なし' # スタイルガイドを明記
 
         # プロンプトに渡す情報を整理
@@ -466,7 +498,9 @@ def create_section_writer_instructions(base_prompt: str) -> Callable[[RunContext
 企業スタイルガイド: {company_style_guide}
 記事のアウトライン（全体像）:
 {outline_context}
-{research_context_summary}
+--- 詳細なリサーチ情報 ---
+{research_context_str[:10000]}
+{ "... (以下省略)" if len(research_context_str) > 10000 else "" }
 ---
 
 --- **あなたの現在のタスク** ---
@@ -484,11 +518,12 @@ def create_section_writer_instructions(base_prompt: str) -> Callable[[RunContext
 ---
 
 --- 執筆ルール ---
-1.  **提供される会話履歴（直前のセクションの内容など）を十分に考慮し、** 前のセクションから自然につながるように、かつ、このセクション（インデックス {target_index}、見出し「{target_heading}」）の主題に沿った文章を作成してください。
-2.  他のセクションの内容は絶対に生成しないでください。
-3.  必ず `<p>`, `<h2>`, `<h3>`, `<ul>`, `<li>`, `<strong>`, `<em>` などの基本的なHTMLタグを使用し、構造化されたコンテンツを生成してください。`<h2>` タグはこのセクションの見出し「{target_heading}」にのみ使用してください。
-4.  SEOを意識し、記事全体のキーワードやこのセクションに関連するキーワードを**自然に**含めてください。（ただし、自然さを損なうような無理なキーワードの詰め込みは避けてください）
-5.  上記の【執筆スタイルとトーンについて】の指示に従い、創造性を発揮し、読者にとって価値のあるオリジナルな文章を作成してください。
+1.  **提供される会話履歴（直前のセクションの内容など）と、上記「詳細なリサーチ情報」を十分に考慮し、** 前のセクションから自然につながるように、かつ、このセクション（インデックス {target_index}、見出し「{target_heading}」）の主題に沿った文章を作成してください。
+2.  **リサーチ情報で示された事実やデータに基づいて執筆し、必要に応じて、信頼できる情報源（特に公式HPなど）へのHTMLリンク (`<a href="URL">リンクテキスト</a>`) を自然な形で含めてください。** リンクテキストは具体的に、例えば会社名やサービス名、情報の内容を示すものにしてください。ただし、過剰なリンクやSEOに不自然なリンクは避けてください。リサーチ情報に記載のない情報は含めないでください。
+3.  他のセクションの内容は絶対に生成しないでください。
+4.  必ず `<p>`, `<h2>`, `<h3>`, `<ul>`, `<li>`, `<strong>`, `<em>`, `<a>` などの基本的なHTMLタグを使用し、構造化されたコンテンツを生成してください。`<h2>` タグはこのセクションの見出し「{target_heading}」にのみ使用してください。
+5.  SEOを意識し、記事全体のキーワードやこのセクションに関連するキーワードを**自然に**含めてください。（ただし、自然さを損なうような無理なキーワードの詰め込みは避けてください）
+6.  上記の【執筆スタイルとトーンについて】の指示に従い、創造性を発揮し、読者にとって価値のあるオリジナルな文章を作成してください。
 ---
 
 --- **【最重要】出力形式について** ---
@@ -502,12 +537,22 @@ def create_section_writer_instructions(base_prompt: str) -> Callable[[RunContext
     return dynamic_instructions_func
 
 
+# 修正: EditorAgent のプロンプト (詳細なリサーチレポート参照とリンク確認)
 def create_editor_instructions(base_prompt: str) -> Callable[[RunContextWrapper[ArticleContext], Agent[ArticleContext]], Awaitable[str]]:
     async def dynamic_instructions_func(ctx: RunContextWrapper[ArticleContext], agent: Agent[ArticleContext]) -> str:
         if not ctx.context.full_draft_html:
             return "エラー: 編集対象のドラフト記事がありません。"
+        if not ctx.context.research_report:
+            return "エラー: 参照すべきリサーチレポートがありません。"
 
-        research_summary = f"リサーチ要約: {ctx.context.research_report.overall_summary[:500]}..." if ctx.context.research_report else "リサーチ情報なし"
+        # リサーチレポートのキーポイントと出典情報を整形
+        research_context_str = f"リサーチ要約: {ctx.context.research_report.overall_summary[:500]}...\n"
+        research_context_str += "主要なキーポイントと出典:\n"
+        for kp in ctx.context.research_report.key_points:
+            sources_str = ", ".join([f"[{url.split('/')[-1] if url.split('/')[-1] else url}]({url})" for url in kp.supporting_sources])
+            research_context_str += f"- {kp.point} (出典: {sources_str})\n"
+        research_context_str += f"参照した全情報源URL数: {len(ctx.context.research_report.all_sources)}\n"
+
 
         full_prompt = f"""{base_prompt}
 
@@ -525,19 +570,22 @@ def create_editor_instructions(base_prompt: str) -> Callable[[RunContextWrapper[
 目標文字数: {ctx.context.target_length or '指定なし'}
 トーン: {ctx.context.generated_outline.suggested_tone if ctx.context.generated_outline else 'N/A'}
 企業スタイルガイド: {ctx.context.company_style_guide or '指定なし'}
-{research_summary}
+--- 詳細なリサーチ情報 ---
+{research_context_str[:10000]}
+{ "... (以下省略)" if len(research_context_str) > 10000 else "" }
 ---
 
 **重要:**
-- 上記のドラフトHTMLをレビューし、記事の要件と**リサーチ結果**に基づいて推敲・編集してください。
+- 上記のドラフトHTMLをレビューし、記事の要件と**詳細なリサーチ情報**に基づいて推敲・編集してください。
 - **特に、文章全体がターゲットペルソナ（{ctx.context.target_persona or '指定なし'}）にとって自然で、親しみやすく、分かりやすい言葉遣いになっているか** を重点的に確認してください。機械的な表現や硬い言い回しがあれば、より人間味のある表現に修正してください。
 - チェックポイント:
     - 全体の流れと一貫性
-    - 各セクションの内容の質と正確性 (リサーチ結果との整合性も)
+    - 各セクションの内容の質と正確性 (**リサーチ情報との整合性、事実確認**)
     - 文法、スペル、誤字脱字
     - 指示されたトーンとスタイルガイドの遵守 (**自然さ、親しみやすさ重視**)
     - ターゲットペルソナへの適合性
     - SEO最適化（キーワードの自然な使用、見出し構造）
+    - **含まれているHTMLリンク (`<a>` タグ) がリサーチ情報に基づいており、適切かつ自然に使用されているか。リンク切れや不適切なリンクがないか。**
     - 人間らしい自然な文章表現、独創性
     - HTML構造の妥当性
 - 必要な修正を直接HTMLに加えてください。
@@ -579,38 +627,40 @@ research_planner_agent = Agent[ArticleContext](
     output_type=AgentOutput, # ResearchPlan or ClarificationNeeded
 )
 
-# 3. リサーチャーエージェント (元のコード通り)
+# 3. リサーチャーエージェント (修正済み: 詳細情報収集)
 RESEARCHER_AGENT_BASE_PROMPT = """
-あなたは熟練のリサーチャーです。
-指定された検索クエリでWeb検索を実行し、結果の中から記事テーマに関連する最も重要で信頼できる情報を要約し、指定された形式で返します。
+あなたは熟練したディープリサーチャーです。
+指定された検索クエリでWeb検索を実行し、結果を**深く分析**します。
+記事テーマに関連する**具体的で信頼できる情報、データ、主張、引用**を**詳細に抽出し、最も適切な出典元URLとタイトルを特定**して、指定された形式で返します。
 **必ず web_search ツールを使用してください。**
 """
 researcher_agent = Agent[ArticleContext](
     name="ResearcherAgent",
-    instructions=create_researcher_instructions(RESEARCHER_AGENT_BASE_PROMPT),
+    instructions=create_researcher_instructions(RESEARCHER_AGENT_BASE_PROMPT), # 修正された関数を使用
     model=RESEARCH_MODEL,
     tools=[web_search_tool], # save_research_snippet を削除済み
-    output_type=ResearchQueryResult, # ResearchQueryResult を返すように変更済み
+    output_type=ResearchQueryResult, # 修正された ResearchQueryResult を返す
 )
 
-# 4. リサーチシンセサイザーエージェント
+# 4. リサーチシンセサイザーエージェント (修正済み: 詳細レポート作成)
 RESEARCH_SYNTHESIZER_AGENT_BASE_PROMPT = """
-あなたは情報を整理し、要点を抽出する専門家です。
-収集された多数のリサーチ結果（要約と抜粋）を分析し、記事のテーマに沿って統合・要約し、記事作成者が活用しやすい実用的なリサーチレポートを作成します。
+あなたは情報を整理し、要点を抽出し、統合する専門家です。
+収集された**詳細なリサーチ結果（抜粋と出典）**を分析し、記事のテーマに沿って統合・要約します。
+各キーポイントについて、**それを裏付ける情報源URLを明確に紐付け**、記事作成者がすぐに活用できる**実用的で詳細なリサーチレポート**を作成します。
 """
 research_synthesizer_agent = Agent[ArticleContext](
     name="ResearchSynthesizerAgent",
-    instructions=create_research_synthesizer_instructions(RESEARCH_SYNTHESIZER_AGENT_BASE_PROMPT),
+    instructions=create_research_synthesizer_instructions(RESEARCH_SYNTHESIZER_AGENT_BASE_PROMPT), # 修正された関数を使用
     model=RESEARCH_MODEL,
     tools=[], # 基本的にツールは不要
-    output_type=AgentOutput, # ResearchReport
+    output_type=AgentOutput, # 修正された ResearchReport を返す
 )
 
 # --- 記事作成エージェント群 ---
-# 5. アウトライン作成エージェント
+# 5. アウトライン作成エージェント (修正済み: 詳細レポート参照)
 OUTLINE_AGENT_BASE_PROMPT = """
 あなたはSEO記事のアウトライン（構成案）を作成する専門家です。
-選択されたテーマ、目標文字数、企業のスタイルガイド、ターゲットペルソナ、そして**リサーチレポート**に基づいて、論理的で網羅的、かつ読者の興味を引く記事のアウトラインを生成します。
+選択されたテーマ、目標文字数、企業のスタイルガイド、ターゲットペルソナ、そして**詳細なリサーチレポート（キーポイントと出典情報を含む）**に基づいて、論理的で網羅的、かつ読者の興味を引く記事のアウトラインを生成します。
 `analyze_competitors` ツールで競合記事の構成を調査し、差別化できる構成を考案します。
 `get_company_data` ツールでスタイルガイドを確認します。
 文字数指定に応じて、見出しの数や階層構造を適切に調整します。
@@ -618,17 +668,18 @@ OUTLINE_AGENT_BASE_PROMPT = """
 """
 outline_agent = Agent[ArticleContext](
     name="OutlineAgent",
-    instructions=create_outline_instructions(OUTLINE_AGENT_BASE_PROMPT),
+    instructions=create_outline_instructions(OUTLINE_AGENT_BASE_PROMPT), # 修正された関数を使用
     model=WRITING_MODEL,
     tools=[analyze_competitors, get_company_data],
     output_type=AgentOutput, # Outline or ClarificationNeeded
 )
 
-# 6. セクション執筆エージェント (修正済み)
+# 6. セクション執筆エージェント (修正済み: 詳細レポート参照とリンク生成)
 SECTION_WRITER_AGENT_BASE_PROMPT = """
 あなたは指定された記事のセクション（見出し）に関する内容を執筆するプロのライターです。
 **あなたの役割は、日本の一般的なブログやコラムのように、自然で人間味あふれる、親しみやすい文章で**、割り当てられた特定のセクションの内容をHTML形式で執筆することです。
-記事全体のテーマ、アウトライン、キーワード、トーン、**会話履歴（前のセクションを含む完全な文脈）**、そしてリサーチ結果に基づき、創造的かつSEOを意識して執筆してください。
+記事全体のテーマ、アウトライン、キーワード、トーン、**会話履歴（前のセクションを含む完全な文脈）**、そして**詳細なリサーチレポート（出典情報付き）**に基づき、創造的かつSEOを意識して執筆してください。
+**リサーチ情報に基づき、必要に応じて信頼できる情報源へのHTMLリンクを自然に含めてください。**
 必要に応じて `web_search` ツールで最新情報や詳細情報を調査し、内容を充実させます。
 **あなたのタスクは、指示された1つのセクションのHTMLコンテンツを生成することだけです。** 読者を引きつけ、価値を提供するオリジナルな文章を作成してください。
 """
@@ -640,11 +691,12 @@ section_writer_agent = Agent[ArticleContext](
     # output_type を削除 (構造化出力を強制しない)
 )
 
-# 7. 推敲・編集エージェント (修正済み)
+# 7. 推敲・編集エージェント (修正済み: 詳細レポート参照とリンク確認)
 EDITOR_AGENT_BASE_PROMPT = """
 あなたはプロの編集者兼SEOスペシャリストです。
-与えられた記事ドラフト（HTML形式）を、記事の要件（テーマ、キーワード、ペルソナ、文字数、トーン、スタイルガイド）と**リサーチ結果**を照らし合わせながら、徹底的にレビューし、推敲・編集します。
+与えられた記事ドラフト（HTML形式）を、記事の要件（テーマ、キーワード、ペルソナ、文字数、トーン、スタイルガイド）と**詳細なリサーチレポート（出典情報付き）**を照らし合わせながら、徹底的にレビューし、推敲・編集します。
 **特に、文章全体がターゲットペルソナにとって自然で、親しみやすく、分かりやすい言葉遣いになっているか** を重点的に確認し、機械的な表現があれば人間味のある表現に修正してください。
+**リサーチ情報との整合性、事実確認、含まれるHTMLリンクの適切性**も厳しくチェックします。
 文章の流れ、一貫性、正確性、文法、読みやすさ、独創性、そしてSEO最適化の観点から、最高品質の記事に仕上げることを目指します。
 必要であれば `web_search` ツールでファクトチェックや追加情報を調査します。
 最終的な成果物として、編集済みの完全なHTMLコンテンツを出力します。
@@ -744,6 +796,8 @@ def save_article(html_content: str, title: Optional[str] = None, filename: str =
         li {{ margin-bottom: 0.5em; }}
         strong {{ font-weight: bold; }}
         em {{ font-style: italic; }}
+        a {{ color: #007bff; text-decoration: none; }}
+        a:hover {{ text-decoration: underline; }}
     </style>
 </head>
 <body>
@@ -838,25 +892,28 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
 
             current_agent = researcher_agent
             current_query_obj = context.research_plan.queries[context.current_research_query_index]
-            agent_input = f"リサーチ計画のクエリ {context.current_research_query_index + 1}「{current_query_obj.query}」について調査し、結果を要約してください。" # 指示変更
-            console.print(f"🤖 {current_agent.name} にクエリ {context.current_research_query_index + 1}/{len(context.research_plan.queries)} のリサーチを依頼します...")
+            agent_input = f"リサーチ計画のクエリ {context.current_research_query_index + 1}「{current_query_obj.query}」について調査し、結果を詳細に抽出・要約してください。" # 修正: 指示変更
+            console.print(f"🤖 {current_agent.name} にクエリ {context.current_research_query_index + 1}/{len(context.research_plan.queries)} の詳細リサーチを依頼します...")
 
         elif context.current_step == "research_synthesizing":
             current_agent = research_synthesizer_agent
-            agent_input = "収集されたリサーチ結果を分析し、記事執筆のための要約レポートを作成してください。" # 入力変更
-            console.print(f"🤖 {current_agent.name} にリサーチ結果の要約を依頼します...")
+            agent_input = "収集された詳細なリサーチ結果を分析し、記事執筆のための詳細な要約レポートを作成してください。" # 修正: 入力変更
+            console.print(f"🤖 {current_agent.name} に詳細リサーチ結果の要約を依頼します...")
 
         elif context.current_step == "research_report_generated":
-             # リサーチレポート確認 (オプション)
+             # リサーチレポート確認 (オプション、詳細表示)
             if context.research_report:
-                console.print("[bold cyan]生成されたリサーチレポート:[/bold cyan]")
+                console.print("[bold cyan]生成された詳細リサーチレポート:[/bold cyan]")
                 console.print(f"トピック: {context.research_report.topic}")
-                console.print(f"要約: {context.research_report.overall_summary}")
-                console.print("主要ポイント:")
-                for p in context.research_report.key_points: console.print(f"  - {p}")
+                console.print(f"全体要約: {context.research_report.overall_summary}")
+                console.print("主要ポイントと出典:")
+                for kp in context.research_report.key_points:
+                    sources_str = ", ".join(kp.supporting_sources[:3]) # 代表的なソースをいくつか表示
+                    if len(kp.supporting_sources) > 3: sources_str += ", ..."
+                    console.print(f"  - {kp.point} (出典: {sources_str})")
                 console.print("面白い切り口:")
                 for a in context.research_report.interesting_angles: console.print(f"  - {a}")
-                console.print(f"情報源URL数: {len(context.research_report.sources_used)}")
+                console.print(f"全情報源URL数: {len(context.research_report.all_sources)}")
 
                 confirm = Prompt.ask("このレポートを基にアウトライン作成に進みますか？ (y/n)", choices=["y", "n"], default="y")
                 if confirm.lower() == 'y':
@@ -873,7 +930,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
         # --- アウトライン作成フェーズ ---
         elif context.current_step == "outline_generation": # 新しいステップ名
             current_agent = outline_agent
-            agent_input = f"選択されたテーマ「{context.selected_theme.title if context.selected_theme else ''}」、リサーチレポート、目標文字数 {context.target_length or '指定なし'} に基づいてアウトラインを作成してください。"
+            agent_input = f"選択されたテーマ「{context.selected_theme.title if context.selected_theme else ''}」、詳細リサーチレポート、目標文字数 {context.target_length or '指定なし'} に基づいてアウトラインを作成してください。" # 修正: 入力変更
             console.print(f"🤖 {current_agent.name} にアウトライン作成を依頼します...")
 
         elif context.current_step == "outline_generated":
@@ -891,7 +948,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
                     context.current_section_index = 0 # 内部インデックスは0から
                     context.generated_sections_html = [] # HTMLリスト初期化
                     context.clear_section_writer_history() # ライター履歴初期化
-                    # 最初のシステムプロンプトを履歴に追加
+                    # 最初のシステムプロンプトを履歴に追加 (修正: プロンプト関数呼び出しをawait)
                     base_instruction_text = await create_section_writer_instructions(SECTION_WRITER_AGENT_BASE_PROMPT)(RunContextWrapper(context=context), section_writer_agent)
                     # 修正: 'system' ロールを使用
                     context.add_to_section_writer_history("system", base_instruction_text)
@@ -921,7 +978,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
             # 履歴は context.section_writer_history に蓄積されている
             # 今回の執筆依頼を user メッセージとして追加
             # ユーザー向け表示は1ベース、内部処理・プロンプト指示は0ベース
-            user_request = f"前のセクション（もしあれば）に続けて、アウトラインのセクション {target_index + 1}「{target_heading}」の内容をHTMLで執筆してください。"
+            user_request = f"前のセクション（もしあれば）に続けて、アウトラインのセクション {target_index + 1}「{target_heading}」の内容をHTMLで執筆してください。提供された詳細リサーチ情報を参照し、必要に応じて出典へのリンクを含めてください。" # 修正: リンク生成を促す
 
             # 現在の履歴に今回のユーザーリクエストを追加して agent_input とする
             # 注意: context.section_writer_history 自体は変更せず、Runnerに渡すリストを作成
@@ -1063,7 +1120,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
             else:
                  current_agent = editor_agent
 
-            agent_input = "記事ドラフト全体をレビューし、推敲・編集してください。"
+            agent_input = "記事ドラフト全体をレビューし、詳細リサーチ情報に基づいて推敲・編集してください。特にリンクの適切性を確認してください。" # 修正: 指示変更
             console.print(f"🤖 {current_agent.name} に最終編集を依頼します...")
 
         else:
@@ -1129,7 +1186,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
             # リトライしてもエラーが解消しなかった場合
             if last_exception:
                 if not context.error_message: # エラーメッセージがまだ設定されていなければ設定
-                     context.error_message = f"Agent実行中にエラーが発生しました（リトライ上限到達）: {last_exception}"
+                       context.error_message = f"Agent実行中にエラーが発生しました（リトライ上限到達）: {last_exception}"
                 context.current_step = "error"
                 continue # エラーステップへ
 
@@ -1139,36 +1196,36 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
             if result and result.final_output: # resultがNoneでないことを確認
                  raw_output_text = str(result.final_output) # デバッグ用に保持
                  if isinstance(result.final_output, AgentOutput.__args__): # type: ignore
-                     agent_output = result.final_output
+                      agent_output = result.final_output
                  elif isinstance(result.final_output, str):
-                     try:
-                         # JSON文字列としてパースを試みる
-                         parsed_output = json.loads(result.final_output)
-                         # 型アノテーションを使って適切なPydanticモデルに変換
-                         status = parsed_output.get("status")
-                         output_model : Optional[type[BaseModel]] = None
-                         if status == "theme_proposal": output_model = ThemeProposal
-                         elif status == "outline": output_model = Outline
-                         # elif status == "article_section": output_model = ArticleSection # SectionWriterは別処理
-                         elif status == "revised_article": output_model = RevisedArticle
-                         elif status == "clarification_needed": output_model = ClarificationNeeded
-                         elif status == "status_update": output_model = StatusUpdate
-                         elif status == "research_plan": output_model = ResearchPlan
-                         elif status == "research_query_result": output_model = ResearchQueryResult
-                         elif status == "research_report": output_model = ResearchReport
+                      try:
+                          # JSON文字列としてパースを試みる
+                          parsed_output = json.loads(result.final_output)
+                          # 型アノテーションを使って適切なPydanticモデルに変換
+                          status = parsed_output.get("status")
+                          output_model : Optional[type[BaseModel]] = None
+                          if status == "theme_proposal": output_model = ThemeProposal
+                          elif status == "outline": output_model = Outline
+                          # elif status == "article_section": output_model = ArticleSection # SectionWriterは別処理
+                          elif status == "revised_article": output_model = RevisedArticle
+                          elif status == "clarification_needed": output_model = ClarificationNeeded
+                          elif status == "status_update": output_model = StatusUpdate
+                          elif status == "research_plan": output_model = ResearchPlan
+                          elif status == "research_query_result": output_model = ResearchQueryResult # 修正: 型追加
+                          elif status == "research_report": output_model = ResearchReport # 修正: 型追加
 
-                         if output_model:
-                             agent_output = output_model.model_validate(parsed_output)
-                         else:
-                             raise ValueError(f"未知のstatus: {status}")
+                          if output_model:
+                               agent_output = output_model.model_validate(parsed_output)
+                          else:
+                               raise ValueError(f"未知のstatus: {status}")
 
-                     except (json.JSONDecodeError, ValidationError, ValueError) as parse_error:
-                         console.print(f"[yellow]警告: Agentからの応答が予期したJSON形式ではありません。内容: {result.final_output[:100]}... エラー: {parse_error}[/yellow]")
-                         agent_output = StatusUpdate(status="status_update", message=f"エージェントからの非構造応答: {result.final_output[:100]}...")
+                      except (json.JSONDecodeError, ValidationError, ValueError) as parse_error:
+                          console.print(f"[yellow]警告: Agentからの応答が予期したJSON形式ではありません。内容: {result.final_output[:100]}... エラー: {parse_error}[/yellow]")
+                          agent_output = StatusUpdate(status="status_update", message=f"エージェントからの非構造応答: {result.final_output[:100]}...")
                  # Pydanticモデルでもなく、JSON文字列でもない場合
                  else:
-                     console.print(f"[yellow]警告: Agentからの応答が予期した型(Pydantic/JSON str)ではありません。型: {type(result.final_output)}, 内容: {str(result.final_output)[:100]}...[/yellow]")
-                     agent_output = StatusUpdate(status="status_update", message=f"エージェントからの予期せぬ型応答: {str(result.final_output)[:100]}...")
+                      console.print(f"[yellow]警告: Agentからの応答が予期した型(Pydantic/JSON str)ではありません。型: {type(result.final_output)}, 内容: {str(result.final_output)[:100]}...[/yellow]")
+                      agent_output = StatusUpdate(status="status_update", message=f"エージェントからの予期せぬ型応答: {str(result.final_output)[:100]}...")
 
             context.last_agent_output = agent_output # SectionWriter以外は AgentOutput 型
 
@@ -1184,17 +1241,17 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
             elif isinstance(agent_output, ResearchPlan):
                 context.research_plan = agent_output
                 context.current_step = "research_plan_generated"
-            elif isinstance(agent_output, ResearchQueryResult) and context.current_step == "researching":
+            elif isinstance(agent_output, ResearchQueryResult) and context.current_step == "researching": # 修正: 型チェック変更
                 if context.research_plan and agent_output.query == context.research_plan.queries[context.current_research_query_index].query:
-                    context.add_query_result(agent_output)
-                    console.print(f"[green]クエリ「{agent_output.query}」のリサーチ結果を処理しました。[/green]")
+                    context.add_query_result(agent_output) # 修正: メソッド呼び出し
+                    console.print(f"[green]クエリ「{agent_output.query}」の詳細リサーチ結果を処理しました。[/green]")
                     context.current_research_query_index += 1 # 次のクエリへ
                 else:
                      console.print(f"[yellow]警告: 予期しないクエリ「{agent_output.query}」の結果を受け取りました。[/yellow]")
                      context.error_message = "予期しないクエリの結果。"
                      context.current_step = "error"
                 # researching ステップは継続
-            elif isinstance(agent_output, ResearchReport):
+            elif isinstance(agent_output, ResearchReport): # 修正: 型チェック変更
                 context.research_report = agent_output
                 context.current_step = "research_report_generated"
             elif isinstance(agent_output, Outline):
@@ -1241,15 +1298,15 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
 
 
 async def main():
-    console.print("[bold magenta]📝 SEO記事生成システム (ストリーミング・自然文強化版) へようこそ！[/bold magenta]") # タイトル変更
+    console.print("[bold magenta]📝 SEO記事生成システム (リサーチ強化・リンク生成版) へようこそ！[/bold magenta]") # タイトル変更
 
     # --- ユーザーからの初期情報入力 ---
-    keywords_str = Prompt.ask("[cyan]ターゲットキーワードを入力してください（カンマ区切り）[/cyan]", default="芝生, 庭, 家族, 子供, 初心者, 手入れ") # 例を更新
+    keywords_str = Prompt.ask("[cyan]ターゲットキーワードを入力してください（カンマ区切り）[/cyan]", default="札幌, 注文住宅, 自然素材, 子育て") # 例を更新
     initial_keywords = [k.strip() for k in keywords_str.split(',') if k.strip()]
 
-    target_persona = Prompt.ask("[cyan]ターゲットペルソナを入力してください（例：庭づくり初心者, 子供がいる家庭）[/cyan]", default="庭づくりに関心があるが、何から始めていいかわからない小さな子供を持つファミリー層") # 例を更新
+    target_persona = Prompt.ask("[cyan]ターゲットペルソナを入力してください（例：庭づくり初心者, 子供がいる家庭）[/cyan]", default="札幌近郊で自然素材を使った家づくりに関心がある、小さな子供を持つ30代夫婦") # 例を更新
 
-    target_length_str = Prompt.ask("[cyan]目標文字数を入力してください（任意、数値のみ）[/cyan]", default="2500") # 例を更新
+    target_length_str = Prompt.ask("[cyan]目標文字数を入力してください（任意、数値のみ）[/cyan]", default="3000") # 例を更新
     target_length = None
     if target_length_str.isdigit():
         target_length = int(target_length_str)
@@ -1259,8 +1316,8 @@ async def main():
     if num_themes_str.isdigit() and int(num_themes_str) > 0:
         num_theme_proposals = int(num_themes_str)
 
-    num_research_queries_str = Prompt.ask("[cyan]リサーチで使用する検索クエリ数を入力してください[/cyan]", default="4") # 例を更新
-    num_research_queries = 4
+    num_research_queries_str = Prompt.ask("[cyan]リサーチで使用する検索クエリ数を入力してください[/cyan]", default="5") # 例を更新
+    num_research_queries = 5
     if num_research_queries_str.isdigit() and int(num_research_queries_str) > 0:
         num_research_queries = int(num_research_queries_str)
 
@@ -1276,14 +1333,14 @@ async def main():
         num_research_queries=num_research_queries,
         vector_store_id=vector_store_id if vector_store_id else None,
         # ダミーの会社情報を設定（オプション）
-        company_name="株式会社スマイルガーデン", # 例を更新
-        company_description="家族の笑顔があふれる、自然と触れ合える庭づくりをお手伝いします。", # 例を更新
-        company_style_guide="専門用語を避け、親しみやすい言葉で。読者の疑問に先回りして答えるような、丁寧で温かい「ですます調」を基本とする。", # 例を更新
+        company_name="株式会社ナチュラルホームズ札幌", # 例を更新
+        company_description="札幌を拠点に、自然素材を活かした健康で快適な注文住宅を提供しています。", # 例を更新
+        company_style_guide="専門用語を避け、温かみのある丁寧語（ですます調）で。子育て世代の読者に寄り添い、安心感を与えるようなトーンを心がける。", # 例を更新
     )
 
     # --- 実行設定 ---
     run_config = RunConfig(
-        workflow_name="SEOArticleGenerationNaturalJP", # ワークフロー名を変更
+        workflow_name="SEOArticleGenerationDeepResearchJP", # ワークフロー名を変更
         trace_id=f"trace_{uuid.uuid4().hex}",
         # trace_include_sensitive_data=False # 必要に応じて機密データトレースを無効化
     )
@@ -1298,3 +1355,4 @@ if __name__ == "__main__":
     except Exception as e:
         console.print(f"\n[bold red]プログラム実行中に致命的なエラーが発生しました: {e}[/bold red]")
         console.print(traceback.format_exc()) # スタックトレースを出力
+
