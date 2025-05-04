@@ -7,13 +7,45 @@ import time # リトライのためのtimeモジュールをインポート
 from pathlib import Path
 from openai import AsyncOpenAI, BadRequestError, InternalServerError # InternalServerErrorをインポート
 from dotenv import load_dotenv
-import rich.console
-import rich.prompt
-import rich.syntax
 from typing import List, Dict, Union, Optional, Tuple, Any, Literal, Callable, Awaitable
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from dataclasses import dataclass, field
 import uuid
+
+# --- 独自の簡易Console実装 ---
+class SimpleConsole:
+    def print(self, message):
+        print(message)
+    
+    def rule(self, title=None):
+        width = 80
+        if title:
+            padding = (width - len(title) - 4) // 2
+            print("=" * padding + f" {title} " + "=" * padding)
+        else:
+            print("=" * width)
+
+# Promptのシンプルな代替品
+class SimplePrompt:
+    @staticmethod
+    def ask(question, choices=None, default=None):
+        prompt = f"{question}"
+        if choices:
+            prompt += f" [{'/'.join(choices)}]"
+        if default:
+            prompt += f" (default: {default})"
+        
+        prompt += ": "
+        answer = input(prompt).strip()
+        
+        if not answer and default:
+            return default
+            
+        if choices and answer not in choices:
+            print(f"Invalid choice. Please select from: {', '.join(choices)}")
+            return SimplePrompt.ask(question, choices, default)
+            
+        return answer
 
 # --- Agents SDK ---
 from agents import (
@@ -39,6 +71,7 @@ from agents import (
     Model,
     OpenAIResponsesModel, # デフォルト
     OpenAIChatCompletionsModel, # Chat Completions API用
+    # アイテムヘルパー (会話履歴構築用)
     ItemHelpers,
 )
 # LiteLLM 連携 (オプション)
@@ -55,7 +88,8 @@ except ImportError:
 # --------------------
 
 # --- 初期設定 ---
-console = rich.console.Console()
+console = SimpleConsole()
+prompt = SimplePrompt()
 load_dotenv()
 
 # APIキー設定 (環境変数から読み込み)
@@ -65,17 +99,17 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not OPENAI_API_KEY:
-    console.print("[bold red]エラー: OPENAI_API_KEY が .env ファイルに設定されていません。[/bold red]")
+    console.print("エラー: OPENAI_API_KEY が .env ファイルに設定されていません。")
     # 必要に応じてプログラムを終了させるか、デフォルトキーを設定
     exit() # APIキーがないと動作しないため終了
 
 # デフォルトのOpenAIクライアントとモデル
 # 必要に応じて set_default_openai_client や set_default_openai_api で変更可能
 async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-# モデル名をgpt-4.1-miniに変更
+# モデル名を設定
 DEFAULT_MODEL = "gpt-4o-mini"
 RESEARCH_MODEL = "gpt-4o-mini" # リサーチもminiで試す
-WRITING_MODEL = "o4-mini"  # 執筆もminiで試す
+WRITING_MODEL = "gpt-4o-mini"  # 執筆もminiで試す
 EDITING_MODEL = "gpt-4o-mini"  # 編集もminiで試す
 
 # リトライ設定
@@ -83,7 +117,6 @@ MAX_RETRIES = 3 # 最大リトライ回数
 INITIAL_RETRY_DELAY = 1 # 初期リトライ遅延（秒）
 
 # --- Pydanticモデル定義 (Agentの出力型) ---
-# (変更なし)
 class ThemeIdea(BaseModel):
     """単一のテーマ案"""
     title: str = Field(description="記事のタイトル案")
@@ -163,14 +196,13 @@ class ResearchReport(BaseModel):
 # エージェントが出力しうる型のUnion
 AgentOutput = Union[
     ThemeProposal, Outline, ArticleSection, RevisedArticle, ClarificationNeeded, StatusUpdate,
-    ResearchPlan, ResearchQueryResult, ResearchReport # ResearchSnippetを削除し、ResearchQueryResultを追加
+    ResearchPlan, ResearchQueryResult, ResearchReport
 ]
 
 # --- コンテキストクラス ---
 @dataclass
 class ArticleContext:
     """記事生成プロセス全体で共有されるコンテキスト"""
-    # (変更なし)
     # --- ユーザー入力 ---
     initial_keywords: List[str] = field(default_factory=list)
     target_persona: Optional[str] = None
@@ -220,7 +252,6 @@ class ArticleContext:
 
 
 # --- ツール定義 ---
-# (変更なし)
 # Web検索ツール (Agents SDK標準) - ResearcherAgentが使用
 web_search_tool = WebSearchTool(
     user_location={"type": "approximate", "country": "JP"} 
@@ -236,7 +267,7 @@ async def get_company_data(ctx: RunContextWrapper[ArticleContext]) -> Dict[str, 
     顧客企業のデータベースやCMSから関連情報を取得します。
     (この実装はダミーです。実際のシステムではAPI呼び出し等に置き換えてください)
     """
-    console.print("[dim]ツール実行(get_company_data): ダミーデータを返します。[/dim]")
+    console.print("ツール実行(get_company_data): ダミーデータを返します。")
     return {
         "success": True,
         "company_name": ctx.context.company_name or "株式会社ジョンソンホームズ",
@@ -255,7 +286,7 @@ async def analyze_competitors(ctx: RunContextWrapper[ArticleContext], query: str
     Args:
         query: 競合分析のための検索クエリ（例：「芝生 育て方 ガイド」）
     """
-    console.print(f"[dim]ツール実行(analyze_competitors): クエリ '{query}' のダミー分析結果を返します。[/dim]")
+    console.print(f"ツール実行(analyze_competitors): クエリ '{query}' のダミー分析結果を返します。")
     return {
         "success": True,
         "summary": f"'{query}' に関する競合記事",
@@ -264,7 +295,6 @@ async def analyze_competitors(ctx: RunContextWrapper[ArticleContext], query: str
     }
 
 # --- 動的プロンプト生成関数 ---
-# (変更なし)
 def create_theme_instructions(base_prompt: str) -> Callable[[RunContextWrapper[ArticleContext], Agent[ArticleContext]], Awaitable[str]]:
     async def dynamic_instructions_func(ctx: RunContextWrapper[ArticleContext], agent: Agent[ArticleContext]) -> str:
         company_info_str = f"企業名: {ctx.context.company_name}\n概要: {ctx.context.company_description}\n文体ガイド: {ctx.context.company_style_guide}\n過去記事傾向: {ctx.context.past_articles_summary}" if ctx.context.company_name else "企業情報なし"
@@ -531,7 +561,7 @@ researcher_agent = Agent[ArticleContext](
     instructions=create_researcher_instructions(RESEARCHER_AGENT_BASE_PROMPT),
     model=RESEARCH_MODEL,
     tools=[web_search_tool], # save_research_snippet を削除済み
-    output_type=ResearchQueryResult, # ResearchQueryResult を返すように変更済み
+    output_type=AgentOutput, # ResearchQueryResult を返すように変更済み
 )
 
 # 4. リサーチシンセサイザーエージェント
@@ -600,7 +630,7 @@ editor_agent = Agent[ArticleContext](
 def get_litellm_agent(agent_type: Literal["editor", "writer", "researcher"], model_name: str, api_key: Optional[str] = None) -> Optional[Agent]:
     """LiteLLMを使用して指定されたタイプのエージェントを生成するヘルパー関数"""
     if not LITELLM_AVAILABLE or not LitellmModel:
-        console.print("[yellow]警告: LiteLLM が利用できないため、LiteLLMモデルは使用できません。[/yellow]")
+        console.print("警告: LiteLLM が利用できないため、LiteLLMモデルは使用できません。")
         return None
 
     try:
@@ -626,7 +656,7 @@ def get_litellm_agent(agent_type: Literal["editor", "writer", "researcher"], mod
             # LiteLLM経由でWebSearchToolを使う場合、tool_choiceがどう機能するか不明瞭
             # model_settings = ModelSettings(tool_choice={"type": "web_search"}) # これはOpenAI API特有の可能性
         else:
-            console.print(f"[red]エラー: 未知のエージェントタイプ '{agent_type}'[/red]")
+            console.print(f"エラー: 未知のエージェントタイプ '{agent_type}'")
             return None
 
         litellm_agent = Agent[ArticleContext](
@@ -637,17 +667,16 @@ def get_litellm_agent(agent_type: Literal["editor", "writer", "researcher"], mod
             tools=tools,
             output_type=output_type,
         )
-        console.print(f"[green]LiteLLMモデル '{model_name}' を使用する {agent_type} エージェントを準備しました。[/green]")
+        console.print(f"LiteLLMモデル '{model_name}' を使用する {agent_type} エージェントを準備しました。")
         return litellm_agent
     except Exception as e:
-        console.print(f"[bold red]LiteLLMモデル '{model_name}' ({agent_type}) の設定中にエラーが発生しました: {e}[/bold red]")
+        console.print(f"LiteLLMモデル '{model_name}' ({agent_type}) の設定中にエラーが発生しました: {e}")
         return None
 
 # --- ヘルパー関数 ---
-# (変更なし)
 def display_article_preview(html_content: str, title: str = "記事プレビュー"):
     """HTMLコンテンツをコンソールに簡易表示する"""
-    console.rule(f"[bold cyan]{title}[/bold cyan]")
+    console.rule(title)
     preview_text = re.sub('<[^<]+?>', '', html_content)
     max_preview_length = 1000
     if len(preview_text) > max_preview_length:
@@ -660,19 +689,18 @@ def save_article(html_content: str, filename: str = "generated_article.html"):
     try:
         filepath = Path(filename)
         filepath.write_text(html_content, encoding="utf-8")
-        console.print(f"[green]記事を {filepath.resolve()} に保存しました。[/green]")
+        console.print(f"記事を {filepath.resolve()} に保存しました。")
     except Exception as e:
-        console.print(f"[bold red]記事の保存中にエラーが発生しました: {e}[/bold red]")
+        console.print(f"記事の保存中にエラーが発生しました: {e}")
 
 # --- メイン実行ループ ---
 async def run_main_loop(context: ArticleContext, run_config: RunConfig):
     """エージェントとの対話ループを実行する関数"""
-    # (ループ内のロジックは変更なし)
     current_agent: Optional[Agent[ArticleContext]] = None
     agent_input: Union[str, List[Dict[str, Any]]] # Agentへの入力 (文字列 or 会話履歴リスト)
 
     while context.current_step not in ["completed", "error"]:
-        console.rule(f"[bold yellow]現在のステップ: {context.current_step}[/bold yellow]")
+        console.rule(f"現在のステップ: {context.current_step}")
 
         # --- ステップに応じたエージェントと入力の決定 ---
         if context.current_step == "start":
@@ -681,24 +709,24 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
             console.print(f"🤖 {current_agent.name} にテーマ提案を依頼します...")
 
         elif context.current_step == "theme_proposed":
-            # ユーザーにテーマ選択を促す (変更なし)
+            # ユーザーにテーマ選択を促す
             if context.last_agent_output and isinstance(context.last_agent_output, ThemeProposal):
-                console.print("[bold cyan]提案されたテーマ:[/bold cyan]")
+                console.print("提案されたテーマ:")
                 for i, theme in enumerate(context.last_agent_output.themes):
-                    console.print(f"  [bold]{i+1}. {theme.title}[/bold]")
+                    console.print(f"  {i+1}. {theme.title}")
                     console.print(f"     説明: {theme.description}")
                     console.print(f"     キーワード: {', '.join(theme.keywords)}")
                 while True:
                     try:
-                        choice = rich.prompt.Prompt.ask(f"使用するテーマの番号を選択してください (1-{len(context.last_agent_output.themes)})", default="1")
+                        choice = prompt.ask(f"使用するテーマの番号を選択してください (1-{len(context.last_agent_output.themes)})", default="1")
                         selected_index = int(choice) - 1
                         if 0 <= selected_index < len(context.last_agent_output.themes):
                             context.selected_theme = context.last_agent_output.themes[selected_index]
                             context.current_step = "theme_selected" # 次のステップへ
-                            console.print(f"[green]テーマ「{context.selected_theme.title}」が選択されました。[/green]")
+                            console.print(f"テーマ「{context.selected_theme.title}」が選択されました。")
                             break
-                        else: console.print("[yellow]無効な番号です。[/yellow]")
-                    except ValueError: console.print("[yellow]数値を入力してください。[/yellow]")
+                        else: console.print("無効な番号です。")
+                    except ValueError: console.print("数値を入力してください。")
             else:
                 context.error_message = "テーマ提案の取得に失敗しました。"
                 context.current_step = "error"
@@ -719,17 +747,17 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
         elif context.current_step == "research_plan_generated":
             # リサーチ計画確認 (オプション)
             if context.research_plan:
-                console.print("[bold cyan]生成されたリサーチ計画:[/bold cyan]")
+                console.print("生成されたリサーチ計画:")
                 console.print(f"トピック: {context.research_plan.topic}")
                 for i, q in enumerate(context.research_plan.queries):
                     console.print(f"  クエリ {i+1}: {q.query} (焦点: {q.focus})")
-                confirm = rich.prompt.Prompt.ask("この計画でリサーチを開始しますか？ (y/n)", choices=["y", "n"], default="y")
+                confirm = prompt.ask("この計画でリサーチを開始しますか？ (y/n)", choices=["y", "n"], default="y")
                 if confirm.lower() == 'y':
                     context.current_step = "researching"
                     context.current_research_query_index = 0 # 最初のクエリから開始
                     context.research_query_results = [] # 結果リストを初期化
                 else:
-                    console.print("[yellow]リサーチ計画を修正するか、前のステップに戻ってください。（現実装では終了します）[/yellow]")
+                    console.print("リサーチ計画を修正するか、前のステップに戻ってください。（現実装では終了します）")
                     context.current_step = "error"
                     context.error_message = "ユーザーがリサーチ計画を拒否しました。"
             else:
@@ -741,7 +769,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
             if not context.research_plan or context.current_research_query_index >= len(context.research_plan.queries):
                 # 全クエリのリサーチ完了 -> 要約ステップへ
                 context.current_step = "research_synthesizing"
-                console.print("[green]全クエリのリサーチが完了しました。要約ステップに移ります。[/green]")
+                console.print("全クエリのリサーチが完了しました。要約ステップに移ります。")
                 continue
 
             current_agent = researcher_agent
@@ -757,7 +785,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
         elif context.current_step == "research_report_generated":
              # リサーチレポート確認 (オプション)
             if context.research_report:
-                console.print("[bold cyan]生成されたリサーチレポート:[/bold cyan]")
+                console.print("生成されたリサーチレポート:")
                 console.print(f"トピック: {context.research_report.topic}")
                 console.print(f"要約: {context.research_report.overall_summary}")
                 console.print("主要ポイント:")
@@ -766,11 +794,11 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
                 for a in context.research_report.interesting_angles: console.print(f"  - {a}")
                 console.print(f"情報源URL数: {len(context.research_report.sources_used)}")
 
-                confirm = rich.prompt.Prompt.ask("このレポートを基にアウトライン作成に進みますか？ (y/n)", choices=["y", "n"], default="y")
+                confirm = prompt.ask("このレポートを基にアウトライン作成に進みますか？ (y/n)", choices=["y", "n"], default="y")
                 if confirm.lower() == 'y':
                     context.current_step = "outline_generation" # アウトライン生成ステップへ
                 else:
-                    console.print("[yellow]リサーチをやり直すか、前のステップに戻ってください。（現実装では終了します）[/yellow]")
+                    console.print("リサーチをやり直すか、前のステップに戻ってください。（現実装では終了します）")
                     context.current_step = "error"
                     context.error_message = "ユーザーがリサーチレポートを拒否しました。"
             else:
@@ -787,20 +815,20 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
         elif context.current_step == "outline_generated":
             # アウトライン確認 (変更なし、ただし次のステップは writing_sections)
             if context.generated_outline:
-                console.print("[bold cyan]生成されたアウトライン:[/bold cyan]")
+                console.print("生成されたアウトライン:")
                 console.print(f"タイトル: {context.generated_outline.title}")
                 console.print(f"トーン: {context.generated_outline.suggested_tone}")
                 for i, section in enumerate(context.generated_outline.sections):
                      console.print(f"  {i+1}. {section.heading}")
                      # サブセクション表示は省略
-                confirm = rich.prompt.Prompt.ask("このアウトラインで記事生成を開始しますか？ (y/n)", choices=["y", "n"], default="y")
+                confirm = prompt.ask("このアウトラインで記事生成を開始しますか？ (y/n)", choices=["y", "n"], default="y")
                 if confirm.lower() == 'y':
                     context.current_step = "writing_sections"
                     context.current_section_index = 0
                     context.generated_sections_html = [] # HTMLリスト初期化
                     context.clear_section_writer_history() # ライター履歴初期化
                 else:
-                    console.print("[yellow]アウトラインを修正するか、前のステップに戻ってください。（現実装では終了します）[/yellow]")
+                    console.print("アウトラインを修正するか、前のステップに戻ってください。（現実装では終了します）")
                     context.current_step = "error" # 簡単のため終了
                     context.error_message = "ユーザーがアウトラインを拒否しました。"
             else:
@@ -813,7 +841,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
             if not context.generated_outline or context.current_section_index >= len(context.generated_outline.sections):
                 context.full_draft_html = context.get_full_draft()
                 context.current_step = "editing"
-                console.print("[green]全セクションの執筆が完了しました。編集ステップに移ります。[/green]")
+                console.print("全セクションの執筆が完了しました。編集ステップに移ります。")
                 continue
 
             current_agent = section_writer_agent
@@ -821,7 +849,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
 
             # --- 会話履歴を input として構築 ---
             # 1. 基本的な指示 (developerロールが良いかもしれない)
-            base_instruction = await create_section_writer_instructions(SECTION_WRITER_AGENT_BASE_PROMPT)(RunContextWrapper(context=context), current_agent) # ダミーのWrapperとAgentを渡す
+            base_instruction = await create_section_writer_instructions(SECTION_WRITER_AGENT_BASE_PROMPT)(RunContextWrapper(context=context, run_config=run_config, items=[]), current_agent) # ダミーのWrapperとAgentを渡す
 
             # MessageInputItem の代わりに辞書を使用
             current_input_messages: List[Dict[str, Any]] = [
@@ -833,7 +861,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
                 previous_section_html = context.generated_sections_html[-1]
                 # MessageInputItem の代わりに辞書を使用
                 current_input_messages.append(
-                    {"role": "assistant", "content": [{"type": "output_text", "text": previous_section_html}]}
+                    {"role": "assistant", "content": [{"type": "input_text", "text": previous_section_html}]}
                 )
 
             # 3. 今回の執筆依頼を user メッセージとして追加
@@ -851,13 +879,13 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
         # --- 編集フェーズ ---
         elif context.current_step == "editing":
             # LiteLLM選択ロジック (変更なし)
-            use_litellm = rich.prompt.Prompt.ask("編集にLiteLLMモデルを使用しますか？ (y/n)", choices=["y", "n"], default="n")
+            use_litellm = prompt.ask("編集にLiteLLMモデルを使用しますか？ (y/n)", choices=["y", "n"], default="n")
             if use_litellm.lower() == 'y' and LITELLM_AVAILABLE:
-                litellm_model_name = rich.prompt.Prompt.ask("[cyan]使用するLiteLLMモデル名を入力してください (例: litellm/anthropic/claude-3-haiku-20240307)[/cyan]", default="litellm/anthropic/claude-3-haiku-20240307")
+                litellm_model_name = prompt.ask("使用するLiteLLMモデル名を入力してください (例: litellm/anthropic/claude-3-haiku-20240307)", default="litellm/anthropic/claude-3-haiku-20240307")
                 # APIキーは環境変数から取得するか、ここでプロンプト表示するなど
                 litellm_api_key = os.getenv(f"{litellm_model_name.split('/')[1].upper()}_API_KEY") # 例: ANTHROPIC_API_KEY
                 if not litellm_api_key:
-                     console.print(f"[yellow]警告: {litellm_model_name} のAPIキーが環境変数等で見つかりません。デフォルトのOpenAIモデルを使用します。[/yellow]")
+                     console.print(f"警告: {litellm_model_name} のAPIキーが環境変数等で見つかりません。デフォルトのOpenAIモデルを使用します。")
                      current_agent = editor_agent
                 else:
                      litellm_editor = get_litellm_agent("editor", litellm_model_name, litellm_api_key)
@@ -869,7 +897,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
             console.print(f"🤖 {current_agent.name} に最終編集を依頼します...")
 
         else:
-            console.print(f"[bold red]未定義のステップ: {context.current_step}[/bold red]")
+            console.print(f"未定義のステップ: {context.current_step}")
             context.current_step = "error"
             context.error_message = f"未定義のステップ {context.current_step} に到達しました。"
             continue
@@ -896,20 +924,20 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
                 break
             except InternalServerError as e:
                 last_exception = e
-                console.print(f"[yellow]サーバーエラー (500) が発生しました。リトライします... ({attempt + 1}/{MAX_RETRIES})[/yellow]")
+                console.print(f"サーバーエラー (500) が発生しました。リトライします... ({attempt + 1}/{MAX_RETRIES})")
                 delay = INITIAL_RETRY_DELAY * (2 ** attempt) # Exponential backoff
                 await asyncio.sleep(delay)
             except (MaxTurnsExceeded, ModelBehaviorError, BadRequestError, AgentsException, UserError) as e:
                 # これらはリトライ対象外のエラー
                 last_exception = e
-                console.print(f"[bold red]Agent実行エラー ({type(e).__name__}): {e}[/bold red]")
+                console.print(f"Agent実行エラー ({type(e).__name__}): {e}")
                 context.error_message = f"Agent実行エラー: {e}"
                 context.current_step = "error"
                 break # リトライせずにループを抜ける
             except Exception as e:
                 # その他の予期せぬエラー
                 last_exception = e
-                console.print(f"[bold red]予期せぬエラーが発生しました: {e}[/bold red]")
+                console.print(f"予期せぬエラーが発生しました: {e}")
                 import traceback
                 traceback.print_exc()
                 context.error_message = f"予期せぬエラー: {e}"
@@ -926,20 +954,20 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
         # --- 結果処理 ---
         agent_output: Optional[AgentOutput] = None
         if result and result.final_output: # resultがNoneでないことを確認
-             if isinstance(result.final_output, AgentOutput.__args__): # type: ignore
+             if isinstance(result.final_output, list(AgentOutput.__args__)): # type: ignore
                   agent_output = result.final_output
              elif isinstance(result.final_output, str):
                   try:
                        parsed_output = json.loads(result.final_output)
                        agent_output = AgentOutput(**parsed_output) # type: ignore
                   except (json.JSONDecodeError, ValidationError) as parse_error:
-                       console.print(f"[yellow]警告: Agentからの応答が予期したJSON形式ではありません。内容: {result.final_output[:100]}... エラー: {parse_error}[/yellow]")
+                       console.print(f"警告: Agentからの応答が予期したJSON形式ではありません。内容: {result.final_output[:100]}... エラー: {parse_error}")
                        agent_output = StatusUpdate(status="status_update", message=f"エージェントからの非構造応答: {result.final_output[:100]}...")
 
         context.last_agent_output = agent_output
 
         if not agent_output:
-             console.print("[yellow]エージェントから有効な出力が得られませんでした。[/yellow]")
+             console.print("エージェントから有効な出力が得られませんでした。")
              context.error_message = "エージェントから有効な出力が得られませんでした。"
              context.current_step = "error"
              continue
@@ -954,10 +982,10 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
             # 現在のクエリと結果のクエリが一致するか確認（念のため）
             if context.research_plan and agent_output.query == context.research_plan.queries[context.current_research_query_index].query:
                 context.add_query_result(agent_output) # 変更: add_snippet -> add_query_result
-                console.print(f"[green]クエリ「{agent_output.query}」のリサーチ結果を処理しました。[/green]")
+                console.print(f"クエリ「{agent_output.query}」のリサーチ結果を処理しました。")
                 context.current_research_query_index += 1 # 次のクエリへ
             else:
-                 console.print(f"[yellow]警告: 予期しないクエリ「{agent_output.query}」の結果を受け取りました。[/yellow]")
+                 console.print(f"警告: 予期しないクエリ「{agent_output.query}」の結果を受け取りました。")
                  context.error_message = "予期しないクエリの結果。"
                  context.current_step = "error"
             # researching ステップは継続
@@ -970,39 +998,39 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
         elif isinstance(agent_output, ArticleSection):
             if agent_output.section_index == context.current_section_index:
                 context.generated_sections_html.append(agent_output.html_content)
-                console.print(f"[green]セクション {context.current_section_index + 1}「{agent_output.heading}」のHTMLが生成されました。[/green]")
+                console.print(f"セクション {context.current_section_index + 1}「{agent_output.heading}」のHTMLが生成されました。")
                 display_article_preview(agent_output.html_content, f"セクション {context.current_section_index + 1} プレビュー")
                 context.current_section_index += 1
                 # writing_sections ステップは継続
             else:
-                console.print(f"[yellow]警告: 予期しないセクションインデックス {agent_output.section_index} の応答を受け取りました（期待値: {context.current_section_index}）。[/yellow]")
+                console.print(f"警告: 予期しないセクションインデックス {agent_output.section_index} の応答を受け取りました（期待値: {context.current_section_index}）。")
                 context.error_message = "予期しないセクションインデックスの応答。"
                 context.current_step = "error"
         elif isinstance(agent_output, RevisedArticle):
             context.final_article_html = agent_output.final_html_content
             context.current_step = "completed"
-            console.print("[green]記事の編集が完了しました！[/green]")
+            console.print("記事の編集が完了しました！")
             display_article_preview(context.final_article_html, "完成記事プレビュー")
         elif isinstance(agent_output, ClarificationNeeded):
-            console.print(f"[bold yellow]確認が必要です:[/bold yellow] {agent_output.message}")
+            console.print(f"確認が必要です: {agent_output.message}")
             context.error_message = f"ユーザーへの確認が必要: {agent_output.message}"
             context.current_step = "error"
         elif isinstance(agent_output, StatusUpdate):
-             console.print(f"[cyan]ステータス:[/cyan] {agent_output.message}")
+             console.print(f"ステータス: {agent_output.message}")
              # StatusUpdateを受け取った場合のステップ遷移ロジックが必要な場合がある
 
     # --- ループ終了後 ---
     if context.current_step == "completed":
-        console.print("\n🎉 [bold green]SEO記事の生成が正常に完了しました。[/bold green]")
+        console.print("\n🎉 SEO記事の生成が正常に完了しました。")
         if context.final_article_html:
-             save_confirm = rich.prompt.Prompt.ask("最終記事を 'final_article.html' として保存しますか？ (y/n)", choices=["y", "n"], default="y")
+             save_confirm = prompt.ask("最終記事を 'final_article.html' として保存しますか？ (y/n)", choices=["y", "n"], default="y")
              if save_confirm.lower() == 'y':
                   save_article(context.final_article_html, "final_article.html")
         else:
-             console.print("[yellow]警告: 最終記事コンテンツが見つかりません。[/yellow]")
+             console.print("警告: 最終記事コンテンツが見つかりません。")
 
     elif context.current_step == "error":
-        console.print(f"\n❌ [bold red]記事生成プロセス中にエラーが発生しました。[/bold red]")
+        console.print(f"\n❌ 記事生成プロセス中にエラーが発生しました。")
         if context.error_message:
             console.print(f"エラー詳細: {context.error_message}")
 
@@ -1010,30 +1038,30 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
 
 
 async def main():
-    console.print("[bold magenta]📝 SEO記事生成システム (リサーチ強化版) へようこそ！[/bold magenta]")
+    console.print("📝 SEO記事生成システム (リサーチ強化版) へようこそ！")
 
     # --- ユーザーからの初期情報入力 ---
-    keywords_str = rich.prompt.Prompt.ask("[cyan]ターゲットキーワードを入力してください（カンマ区切り）[/cyan]", default="芝生, 育て方, 初心者")
+    keywords_str = prompt.ask("ターゲットキーワードを入力してください（カンマ区切り）", default="芝生, 育て方, 初心者")
     initial_keywords = [k.strip() for k in keywords_str.split(',') if k.strip()]
 
-    target_persona = rich.prompt.Prompt.ask("[cyan]ターゲットペルソナを入力してください（例：庭づくり初心者, 子供がいる家庭）[/cyan]", default="庭づくり初心者")
+    target_persona = prompt.ask("ターゲットペルソナを入力してください（例：庭づくり初心者, 子供がいる家庭）", default="庭づくり初心者")
 
-    target_length_str = rich.prompt.Prompt.ask("[cyan]目標文字数を入力してください（任意、数値のみ）[/cyan]", default="2000")
+    target_length_str = prompt.ask("目標文字数を入力してください（任意、数値のみ）", default="2000")
     target_length = None
     if target_length_str.isdigit():
         target_length = int(target_length_str)
 
-    num_themes_str = rich.prompt.Prompt.ask("[cyan]提案してほしいテーマ数を入力してください[/cyan]", default="3")
+    num_themes_str = prompt.ask("提案してほしいテーマ数を入力してください", default="3")
     num_theme_proposals = 3
     if num_themes_str.isdigit() and int(num_themes_str) > 0:
          num_theme_proposals = int(num_themes_str)
 
-    num_research_queries_str = rich.prompt.Prompt.ask("[cyan]リサーチで使用する検索クエリ数を入力してください[/cyan]", default="3") # デフォルトを3に減らしてテスト
+    num_research_queries_str = prompt.ask("リサーチで使用する検索クエリ数を入力してください", default="3") # デフォルトを3に減らしてテスト
     num_research_queries = 3
     if num_research_queries_str.isdigit() and int(num_research_queries_str) > 0:
         num_research_queries = int(num_research_queries_str)
 
-    vector_store_id = rich.prompt.Prompt.ask("[cyan]File Searchで使用するVector Store IDを入力してください（任意）[/cyan]", default="")
+    vector_store_id = prompt.ask("File Searchで使用するVector Store IDを入力してください（任意）", default="")
 
 
     # --- コンテキスト初期化 ---
@@ -1060,6 +1088,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
-        console.print(f"\n[bold red]プログラム実行中に致命的なエラーが発生しました: {e}[/bold red]")
+        print(f"\nプログラム実行中に致命的なエラーが発生しました: {e}")
         import traceback
         traceback.print_exc()

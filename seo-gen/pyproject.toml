@@ -8,6 +8,7 @@ dependencies = [
     "beautifulsoup4>=4.13.4",
     "openai>=1.76.0",
     "openai-agents[viz]>=0.0.13",
+    "pillow>=11.2.1",
     "requests>=2.32.3",
     "rich>=14.0.0",
 ]
