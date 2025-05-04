@@ -8,9 +8,9 @@ from pathlib import Path
 from openai import AsyncOpenAI, BadRequestError, InternalServerError # InternalServerErrorをインポート
 from openai.types.responses import ResponseTextDeltaEvent, ResponseCompletedEvent # Streaming用イベント
 from dotenv import load_dotenv
-import rich.console
-import rich.prompt
-import rich.syntax
+from rich.console import Console
+from rich.prompt import Prompt
+from rich.syntax import Syntax
 from typing import List, Dict, Union, Optional, Tuple, Any, Literal, Callable, Awaitable
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from dataclasses import dataclass, field
@@ -63,7 +63,7 @@ except ImportError:
 # --------------------
 
 # --- 初期設定 ---
-console = rich.console.Console()
+console = Console()
 load_dotenv()
 
 # APIキー設定 (環境変数から読み込み)
@@ -782,7 +782,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
                     console.print(f"      キーワード: {', '.join(theme.keywords)}")
                 while True:
                     try:
-                        choice = rich.prompt.Prompt.ask(f"使用するテーマの番号を選択してください (1-{len(context.last_agent_output.themes)})", default="1")
+                        choice = Prompt.ask(f"使用するテーマの番号を選択してください (1-{len(context.last_agent_output.themes)})", default="1")
                         selected_index = int(choice) - 1
                         if 0 <= selected_index < len(context.last_agent_output.themes):
                             context.selected_theme = context.last_agent_output.themes[selected_index]
@@ -815,7 +815,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
                 console.print(f"トピック: {context.research_plan.topic}")
                 for i, q in enumerate(context.research_plan.queries):
                     console.print(f"  クエリ {i+1}: {q.query} (焦点: {q.focus})")
-                confirm = rich.prompt.Prompt.ask("この計画でリサーチを開始しますか？ (y/n)", choices=["y", "n"], default="y")
+                confirm = Prompt.ask("この計画でリサーチを開始しますか？ (y/n)", choices=["y", "n"], default="y")
                 if confirm.lower() == 'y':
                     context.current_step = "researching"
                     context.current_research_query_index = 0 # 最初のクエリから開始
@@ -858,7 +858,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
                 for a in context.research_report.interesting_angles: console.print(f"  - {a}")
                 console.print(f"情報源URL数: {len(context.research_report.sources_used)}")
 
-                confirm = rich.prompt.Prompt.ask("このレポートを基にアウトライン作成に進みますか？ (y/n)", choices=["y", "n"], default="y")
+                confirm = Prompt.ask("このレポートを基にアウトライン作成に進みますか？ (y/n)", choices=["y", "n"], default="y")
                 if confirm.lower() == 'y':
                     context.current_step = "outline_generation" # アウトライン生成ステップへ
                 else:
@@ -1049,7 +1049,7 @@ async def run_main_loop(context: ArticleContext, run_config: RunConfig):
         # --- 編集フェーズ ---
         elif context.current_step == "editing":
             # LiteLLM選択ロジック (変更なし)
-            use_litellm = rich.prompt.Prompt.ask("編集にLiteLLMモデルを使用しますか？ (y/n)", choices=["y", "n"], default="n")
+            use_litellm = Prompt.ask("編集にLiteLLMモデルを使用しますか？ (y/n)", choices=["y", "n"], default="n")
             if use_litellm.lower() == 'y' and LITELLM_AVAILABLE:
                 litellm_model_name = Prompt.ask("[cyan]使用するLiteLLMモデル名を入力してください (例: litellm/anthropic/claude-3-haiku-20240307)[/cyan]", default="litellm/anthropic/claude-3-haiku-20240307")
                 # APIキーは環境変数から取得するか、ここでプロンプト表示など
@@ -1254,7 +1254,7 @@ async def main():
     if target_length_str.isdigit():
         target_length = int(target_length_str)
 
-    num_themes_str = rich.prompt.Prompt.ask("[cyan]提案してほしいテーマ数を入力してください[/cyan]", default="3")
+    num_themes_str = Prompt.ask("[cyan]提案してほしいテーマ数を入力してください[/cyan]", default="3")
     num_theme_proposals = 3
     if num_themes_str.isdigit() and int(num_themes_str) > 0:
         num_theme_proposals = int(num_themes_str)
@@ -1264,7 +1264,7 @@ async def main():
     if num_research_queries_str.isdigit() and int(num_research_queries_str) > 0:
         num_research_queries = int(num_research_queries_str)
 
-    vector_store_id = rich.prompt.Prompt.ask("[cyan]File Searchで使用するVector Store IDを入力してください（任意）[/cyan]", default="")
+    vector_store_id = Prompt.ask("[cyan]File Searchで使用するVector Store IDを入力してください（任意）[/cyan]", default="")
 
 
     # --- コンテキスト初期化 ---
